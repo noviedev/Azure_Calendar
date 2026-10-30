@@ -1,0 +1,11 @@
+<resources>
+    <string name="app_name">Azure Calendar</string>
+
+    <!-- Google OAuth Client ID -->
+    <string name="google_web_client_id">278906261627-4q5bqb5d03v9cque9c1f9vvbtj1tu6nl.apps.googleusercontent.com</string>
+
+    <!-- Facebook App Configuration -->
+    <string name="facebook_app_id">1071999228807461</string>
+    <string name="fb_login_protocol_scheme">fb1071999228807461</string>
+    <string name="facebook_client_token">42017f6798830d6d21e17bc8bdc951ca</string>
+</resources>

@@ -1,0 +1,47 @@
+{
+  "project_info": {
+    "project_number": "278906261627",
+    "project_id": "azure-calendar",
+    "storage_bucket": "azure-calendar.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:278906261627:android:f9433db8c97dbd10c692de",
+        "android_client_info": {
+          "package_name": "com.example.azurecalendar"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "278906261627-nmmmekqgf952m8n6gcluac1p5kub2v7b.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.example.azurecalendar",
+            "certificate_hash": "172776af58c0bd0fb138388a3843b29bf033fd27"
+          }
+        },
+        {
+          "client_id": "278906261627-4q5bqb5d03v9cque9c1f9vvbtj1tu6nl.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAHYVZJxnbHUB5kkXvAmWp-Sy3kt2mCSiE"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "278906261627-4q5bqb5d03v9cque9c1f9vvbtj1tu6nl.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

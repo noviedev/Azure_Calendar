@@ -1,0 +1,116 @@
+<?xml version="1.0" encoding="utf-8"?>
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- 1. Light Twilight Sky Base -->
+    <item android:drawable="@color/purple_light" />
+
+    <!-- 2. Soft Cloud Silhouettes (Top & Bottom) -->
+    <item
+        android:width="260dp"
+        android:height="160dp"
+        android:gravity="top|start"
+        android:top="-30dp"
+        android:left="-40dp">
+        <shape android:shape="oval">
+            <solid android:color="#4DFFFFFF" />
+        </shape>
+    </item>
+
+    <item
+        android:width="240dp"
+        android:height="140dp"
+        android:gravity="top|end"
+        android:top="-10dp"
+        android:right="-30dp">
+        <shape android:shape="oval">
+            <solid android:color="#4DFFFFFF" />
+        </shape>
+    </item>
+
+    <item
+        android:width="300dp"
+        android:height="180dp"
+        android:gravity="bottom|center_horizontal"
+        android:bottom="-60dp">
+        <shape android:shape="oval">
+            <solid android:color="#59FFFFFF" />
+        </shape>
+    </item>
+
+    <!-- 3. Scattered Night Sky Stars -->
+    <!-- Top-Left Sparkle Star -->
+    <item
+        android:width="22dp"
+        android:height="22dp"
+        android:gravity="top|start"
+        android:top="110dp"
+        android:left="50dp"
+        android:drawable="@drawable/ic_star_sparkle" />
+
+    <!-- Top-Right White Star -->
+    <item
+        android:width="18dp"
+        android:height="18dp"
+        android:gravity="top|end"
+        android:top="150dp"
+        android:right="60dp"
+        android:drawable="@drawable/ic_star_sparkle_white" />
+
+    <!-- Upper-Right Accent Star -->
+    <item
+        android:width="24dp"
+        android:height="24dp"
+        android:gravity="top|end"
+        android:top="240dp"
+        android:right="45dp"
+        android:drawable="@drawable/ic_star_sparkle" />
+
+    <!-- Lower-Left Star -->
+    <item
+        android:width="20dp"
+        android:height="20dp"
+        android:gravity="bottom|start"
+        android:bottom="210dp"
+        android:left="45dp"
+        android:drawable="@drawable/ic_star_sparkle" />
+
+    <!-- Lower-Right White Star -->
+    <item
+        android:width="18dp"
+        android:height="18dp"
+        android:gravity="bottom|end"
+        android:bottom="170dp"
+        android:right="70dp"
+        android:drawable="@drawable/ic_star_sparkle_white" />
+
+    <!-- Bottom Center Star -->
+    <item
+        android:width="20dp"
+        android:height="20dp"
+        android:gravity="bottom|start"
+        android:bottom="100dp"
+        android:left="90dp"
+        android:drawable="@drawable/ic_star_sparkle" />
+
+    <!-- 4. White-Bordered Card Frame for Logo -->
+    <item
+        android:width="228dp"
+        android:height="228dp"
+        android:gravity="center">
+        <shape android:shape="rectangle">
+            <solid android:color="#230D65" />
+            <stroke
+                android:width="4dp"
+                android:color="#FFFFFF" />
+            <corners android:radius="32dp" />
+        </shape>
+    </item>
+
+    <!-- 5. Logo Resource Inside Frame -->
+    <item
+        android:width="196dp"
+        android:height="196dp"
+        android:gravity="center"
+        android:drawable="@drawable/logo" />
+
+</layer-list>

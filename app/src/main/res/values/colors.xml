@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="purple_light">#FFBB86FC</color>
+    <color name="primary_purple">#6A1B9A</color>
+    <color name="light_lavender">#F3E5F5</color>
+    <color name="screen_bg">#FAF5FC</color>
+    <color name="card_bg">#FFFFFF</color>
+    <color name="text_primary">#2C1A36</color>
+    <color name="text_secondary">#7B6287</color>
+    <color name="border_purple">#E1BEE7</color>
+
+    <!-- Day Highlights -->
+    <color name="highlight_weekend">#FFF9C4</color> <!-- Yellow -->
+    <color name="highlight_holiday">#FFCDD2</color> <!-- Red -->
+    <color name="highlight_weekday">#00000000</color> <!-- Clear/Transparent -->
+</resources>
