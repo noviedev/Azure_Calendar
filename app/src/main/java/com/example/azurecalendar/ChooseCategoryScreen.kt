@@ -108,12 +108,12 @@ fun ChooseCategoryScreen(
 
     var activeMonthShort by remember(selectedDateText) {
         val foundM = monthNamesList.find { selectedDateText.contains(it, ignoreCase = true) }
-        mutableStateOf(if (foundM != null && !selectedDateText.contains("Sept 2", ignoreCase = true) && !selectedDateText.contains("Sept 1", ignoreCase = true)) foundM else currentRealMonthShort)
+        mutableStateOf(foundM ?: currentRealMonthShort)
     }
 
     var activeYear by remember(selectedDateText) {
         val foundY = Regex("\\b20\\d{2}\\b").find(selectedDateText)?.value?.toIntOrNull()
-        mutableIntStateOf(if (foundY != null && foundY != 2026) foundY else currentRealYear)
+        mutableIntStateOf(foundY ?: currentRealYear)
     }
 
     val fullMonthName = remember(activeMonthShort) {

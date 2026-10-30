@@ -84,31 +84,32 @@ class MainActivity : FragmentActivity() {
                 val auth = FirebaseAuth.getInstance()
                 val startListeners = {
                     FirebaseCloudSyncManager.startRealtimeCloudListener(context, forceRestart = true)
+                    FirebaseCloudSyncManager.syncAllLocalUnitsToCloud(context)
                 }
 
-                if (auth.currentUser != null) {
-                    startListeners()
-                } else {
+                // Start listeners immediately so devices don't wait on auth timeout
+                startListeners()
+
+                if (auth.currentUser == null) {
                     try {
                         auth.signInAnonymously()
                             .addOnSuccessListener {
-                                Log.d("CloudSync", "Anonymous auth success, starting listeners")
+                                Log.d("CloudSync", "Anonymous auth success, restarting listeners")
                                 startListeners()
                             }
                             .addOnFailureListener { e ->
                                 Log.e("CloudSync", "Anonymous auth failed: ${e.message}")
-                                startListeners()
                             }
                     } catch (e: Exception) {
                         Log.e("CloudSync", "Auth exception: ${e.message}")
-                        startListeners()
                     }
                 }
             }
 
-            // 2. Sync full catalog when on owner dashboard
+            // 2. Sync catalog & restart listener whenever switching to Owner or Agent dashboard
             LaunchedEffect(currentScreen) {
-                if (currentScreen == "owner_dashboard") {
+                if (currentScreen == "owner_dashboard" || currentScreen == "agent_dashboard") {
+                    FirebaseCloudSyncManager.startRealtimeCloudListener(context, forceRestart = false)
                     FirebaseCloudSyncManager.syncAllLocalUnitsToCloud(context)
                 }
             }
@@ -136,31 +137,58 @@ class MainActivity : FragmentActivity() {
                     "login" -> LoginScreen(
                         onBackClick = { currentScreen = "welcome" },
                         onLoginSubmit = { email, password ->
-                            if (email.isNotBlank() && password.isNotBlank()) {
+                            val cleanEmail = email.trim()
+                            val cleanPassword = password.trim()
+
+                            if (cleanEmail.isNotBlank() && cleanPassword.isNotBlank()) {
                                 val securityPrefs = context.getSharedPreferences("azure_calendar_security_info", Context.MODE_PRIVATE)
                                 val infoPrefs = context.getSharedPreferences("azure_calendar_personal_info", Context.MODE_PRIVATE)
                                 val savedAdminEmail = infoPrefs.getString("email_Admin", "admin@azure.com") ?: "admin@azure.com"
 
-                                val isAdminUser = email.equals(savedAdminEmail, ignoreCase = true) ||
-                                        email.contains("admin", ignoreCase = true) ||
-                                        email.contains("owner", ignoreCase = true)
-                                val userKey = if (isAdminUser) "Admin" else email.substringBefore("@").lowercase()
+                                val isAdminUser = cleanEmail.equals(savedAdminEmail, ignoreCase = true) ||
+                                        cleanEmail.contains("admin", ignoreCase = true) ||
+                                        cleanEmail.contains("owner", ignoreCase = true)
+                                val userKey = if (isAdminUser) "Admin" else cleanEmail.substringBefore("@").lowercase()
 
                                 val defaultPass = if (isAdminUser) "novie1109" else "123456"
-                                val savedPassword = securityPrefs.getString("password_$userKey", defaultPass) ?: defaultPass
+                                val savedPassword = securityPrefs.getString("password_$userKey", null)
 
-                                if (password != savedPassword) {
-                                    Toast.makeText(context, "Incorrect password! Please enter your new password.", Toast.LENGTH_SHORT).show()
-                                } else {
+                                val completeLogin = {
                                     val role = if (isAdminUser) "Owner" else "Agent"
                                     val dbAgents = dbHelper.getAllAgents()
-                                    val matchedAgent = dbAgents.find { it["email"]?.equals(email, ignoreCase = true) == true }
-                                    val name = matchedAgent?.get("name") ?: if (isAdminUser) "Admin" else email.substringBefore("@").replaceFirstChar { it.uppercase() }
+                                    val matchedAgent = dbAgents.find { it["email"]?.equals(cleanEmail, ignoreCase = true) == true }
+                                    val name = matchedAgent?.get("name")
+                                        ?: infoPrefs.getString("name_$userKey", null)
+                                        ?: if (isAdminUser) "Admin" else cleanEmail.substringBefore("@").replaceFirstChar { it.uppercase() }
+
+                                    // Ensure agent exists in local DB and Cloud so all devices stay in sync
+                                    if (!isAdminUser && matchedAgent == null) {
+                                        dbHelper.insertAgent(name, cleanEmail, "", role, "Female")
+                                        FirebaseCloudSyncManager.pushAgentToCloud(name, cleanEmail, "", role, "Female")
+                                    }
 
                                     sessionManager.saveSession(name, role)
                                     registeredAgentName = name
+                                    FirebaseCloudSyncManager.startRealtimeCloudListener(context, forceRestart = true)
                                     Toast.makeText(context, "Welcome back, $name!", Toast.LENGTH_SHORT).show()
                                     currentScreen = if (role == "Owner") "owner_dashboard" else "agent_dashboard"
+                                }
+
+                                // 1. Check local password if saved on this device, or default password
+                                if ((savedPassword != null && cleanPassword == savedPassword) || cleanPassword == defaultPass) {
+                                    completeLogin()
+                                } else {
+                                    // 2. Fallback: Check Firebase Auth for accounts created on another phone!
+                                    FirebaseAuth.getInstance().signInWithEmailAndPassword(cleanEmail, cleanPassword)
+                                        .addOnCompleteListener { task ->
+                                            if (task.isSuccessful) {
+                                                // Cache password locally on this second device for next time
+                                                securityPrefs.edit().putString("password_$userKey", cleanPassword).apply()
+                                                completeLogin()
+                                            } else {
+                                                Toast.makeText(context, "Incorrect email or password!", Toast.LENGTH_SHORT).show()
+                                            }
+                                        }
                                 }
                             } else {
                                 Toast.makeText(context, "Please enter email and password", Toast.LENGTH_SHORT).show()
@@ -186,39 +214,44 @@ class MainActivity : FragmentActivity() {
                     "register" -> RegisterScreen(
                         onBackClick = { currentScreen = "login" },
                         onRegisterSubmit = { fullName, email, password, phoneNumber ->
-                            val isOwner = email.contains("admin", ignoreCase = true) || email.contains("owner", ignoreCase = true)
+                            val cleanName = fullName.trim()
+                            val cleanEmail = email.trim()
+                            val cleanPass = password.trim()
+                            val cleanPhone = phoneNumber.trim()
+
+                            val isOwner = cleanEmail.contains("admin", ignoreCase = true) || cleanEmail.contains("owner", ignoreCase = true)
                             val finalRole = if (isOwner) "Owner" else "Agent"
 
                             val securityPrefs = context.getSharedPreferences("azure_calendar_security_info", Context.MODE_PRIVATE)
                             val infoPrefs = context.getSharedPreferences("azure_calendar_personal_info", Context.MODE_PRIVATE)
-                            val userKey = if (isOwner) "Admin" else email.substringBefore("@").lowercase()
+                            val userKey = if (isOwner) "Admin" else cleanEmail.substringBefore("@").lowercase()
 
                             securityPrefs.edit()
-                                .putString("password_$userKey", password)
-                                .putString("password_$fullName", password)
+                                .putString("password_$userKey", cleanPass)
+                                .putString("password_$cleanName", cleanPass)
                                 .apply()
 
                             infoPrefs.edit()
-                                .putString("name_$userKey", fullName)
-                                .putString("email_$userKey", email)
-                                .putString("phone_$userKey", phoneNumber)
+                                .putString("name_$userKey", cleanName)
+                                .putString("email_$userKey", cleanEmail)
+                                .putString("phone_$userKey", cleanPhone)
                                 .apply()
 
-                            dbHelper.insertAgent(fullName, email, phoneNumber, finalRole)
-                            FirebaseCloudSyncManager.pushAgentToCloud(fullName, email, phoneNumber, finalRole, "Female")
+                            dbHelper.insertAgent(cleanName, cleanEmail, cleanPhone, finalRole)
+                            FirebaseCloudSyncManager.pushAgentToCloud(cleanName, cleanEmail, cleanPhone, finalRole, "Female")
                             if (isOwner) {
-                                FirebaseCloudSyncManager.pushAdminProfileToCloud(fullName, email, phoneNumber, finalRole, "Female")
+                                FirebaseCloudSyncManager.pushAdminProfileToCloud(cleanName, cleanEmail, cleanPhone, finalRole, "Female")
                             }
-                            sessionManager.saveSession(fullName, finalRole)
-                            registeredAgentName = fullName
+                            sessionManager.saveSession(cleanName, finalRole)
+                            registeredAgentName = cleanName
 
                             try {
-                                FirebaseAuth.getInstance().createUserWithEmailAndPassword(email, password)
+                                FirebaseAuth.getInstance().createUserWithEmailAndPassword(cleanEmail, cleanPass)
                                     .addOnCompleteListener { task ->
                                         if (task.isSuccessful) {
                                             val user = task.result?.user
                                             val profileUpdates = userProfileChangeRequest {
-                                                displayName = fullName
+                                                displayName = cleanName
                                             }
                                             user?.updateProfile(profileUpdates)
                                         }
@@ -228,7 +261,7 @@ class MainActivity : FragmentActivity() {
                                 Log.e("FirebaseAuth", "Auth error: ${e.message}")
                             }
 
-                            Toast.makeText(context, "Welcome, $fullName!", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(context, "Welcome, $cleanName!", Toast.LENGTH_SHORT).show()
                             currentScreen = if (isOwner) "owner_dashboard" else "agent_dashboard"
                         },
                         onNavigateToLogin = { currentScreen = "login" },
@@ -250,7 +283,6 @@ class MainActivity : FragmentActivity() {
                     )
 
                     "agent_dashboard" -> {
-                        // key(cloudSyncTick) forces AgentDashboardScreen to reload SQLite units whenever Firebase updates!
                         key(cloudSyncTick) {
                             AgentDashboardScreen(
                                 agentName = registeredAgentName,
@@ -263,7 +295,6 @@ class MainActivity : FragmentActivity() {
                     }
 
                     "owner_dashboard" -> {
-                        // key(cloudSyncTick) forces OwnerDashboardScreen to stay in sync with live updates!
                         key(cloudSyncTick) {
                             OwnerDashboardScreen(
                                 onLogoutClick = {
@@ -285,8 +316,14 @@ class MainActivity : FragmentActivity() {
 
                     "add_edit_unit" -> AddEditUnitScreen(
                         onBackClick = { currentScreen = "owner_dashboard" },
-                        onSaveSuccess = { currentScreen = "owner_dashboard" },
-                        onDeleteUnit = { currentScreen = "owner_dashboard" }
+                        onSaveSuccess = {
+                            FirebaseCloudSyncManager.syncAllLocalUnitsToCloud(context)
+                            currentScreen = "owner_dashboard"
+                        },
+                        onDeleteUnit = {
+                            FirebaseCloudSyncManager.syncAllLocalUnitsToCloud(context)
+                            currentScreen = "owner_dashboard"
+                        }
                     )
 
                     "invoices" -> InvoiceBillingScreen(

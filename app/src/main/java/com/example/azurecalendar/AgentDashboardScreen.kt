@@ -638,7 +638,6 @@ private fun CalendarTabContent(
                     val finalTargetDate = dateText.ifBlank { defaultTargetDate }
                     val colorLong = color.value.toLong()
                     dbHelper.deleteEventByDateAndUnit(finalTargetDate, unitName)
-                    dbHelper.deleteEventsForUnit(unitName)
                     dbHelper.insertEvent(
                         title = "Staycation - $shape",
                         date = finalTargetDate,
@@ -2230,7 +2229,6 @@ private fun UnitsTabContent(
                 val finalTargetDate = dateText.ifBlank { defaultRangeStr }
                 val colorLong = color.value.toLong()
                 dbHelper.deleteEventByDateAndUnit(finalTargetDate, unitName)
-                dbHelper.deleteEventsForUnit(unitName)
                 dbHelper.insertEvent(
                     title = "Staycation - $shape",
                     date = finalTargetDate,

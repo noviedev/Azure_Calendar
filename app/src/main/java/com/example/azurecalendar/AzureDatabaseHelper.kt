@@ -109,7 +109,8 @@ class AzureDatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE
         email: String,
         phone: String = "",
         role: String = "Property Agent",
-        gender: String = "Female"
+        gender: String = "Female",
+        syncToCloud: Boolean = true
     ): Long {
         val db = this.writableDatabase
         if (email.isNotBlank()) {
@@ -125,7 +126,12 @@ class AzureDatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE
             put(COLUMN_AGENT_GENDER, gender)
             put(COLUMN_AGENT_POSITION, role)
         }
-        return db.insert(TABLE_AGENTS, null, values)
+        val rowId = db.insert(TABLE_AGENTS, null, values)
+
+        if (syncToCloud && name.isNotBlank() && email.isNotBlank()) {
+            FirebaseCloudSyncManager.pushAgentToCloud(name, email, phone, role, gender)
+        }
+        return rowId
     }
 
     fun getAllAgents(): List<Map<String, String>> {
@@ -164,13 +170,26 @@ class AzureDatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE
         return db.delete(TABLE_AGENTS, "$COLUMN_AGENT_ID = ?", arrayOf(id.toString()))
     }
 
-    fun deleteAgentByEmail(email: String): Int {
+    fun deleteAgentByEmail(email: String, syncToCloud: Boolean = true): Int {
         val db = this.writableDatabase
-        return db.delete(TABLE_AGENTS, "$COLUMN_AGENT_EMAIL = ?", arrayOf(email))
+        val rows = db.delete(TABLE_AGENTS, "$COLUMN_AGENT_EMAIL = ?", arrayOf(email))
+        if (syncToCloud && email.isNotBlank()) {
+            FirebaseCloudSyncManager.deleteAgentFromCloud(email)
+        }
+        return rows
     }
 
     // --- Events CRUD ---
-    fun insertEvent(title: String, date: String, time: String, agent: String, unit: String, shape: String = "", color: Long = 0L): Long {
+    fun insertEvent(
+        title: String,
+        date: String,
+        time: String,
+        agent: String,
+        unit: String,
+        shape: String = "",
+        color: Long = 0L,
+        syncToCloud: Boolean = true
+    ): Long {
         val db = this.writableDatabase
         val cleanUnit = unit.replace("Unit", "", ignoreCase = true).trim()
         val normalizedUnit = "Unit $cleanUnit"
@@ -190,7 +209,23 @@ class AzureDatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE
             put(COLUMN_SHAPE, shape)
             put(COLUMN_COLOR, color)
         }
-        return db.insert(TABLE_EVENTS, null, values)
+        val rowId = db.insert(TABLE_EVENTS, null, values)
+
+        // Automatically push to Firebase Firestore whenever a user adds/updates an event!
+        if (syncToCloud && cleanUnit.isNotBlank() && date.isNotBlank() && title != "TEMP") {
+            FirebaseCloudSyncManager.pushEventToCloud(
+                mapOf(
+                    "title" to title,
+                    "date" to date,
+                    "time" to time,
+                    "agent" to agent,
+                    "unit" to normalizedUnit,
+                    "shape" to shape.ifBlank { "Reserved" },
+                    "color" to color.toString()
+                )
+            )
+        }
+        return rowId
     }
 
     fun getAllEvents(): List<Map<String, String>> {
@@ -229,6 +264,17 @@ class AzureDatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE
 
     fun deleteEvent(id: Long) {
         val db = this.writableDatabase
+        if (id != -999L) {
+            val cursor = db.rawQuery("SELECT $COLUMN_DATE, $COLUMN_UNIT FROM $TABLE_EVENTS WHERE $COLUMN_ID = ?", arrayOf(id.toString()))
+            if (cursor.moveToFirst()) {
+                val dateStr = cursor.getString(0) ?: ""
+                val unitStr = cursor.getString(1) ?: ""
+                if (unitStr.isNotBlank()) {
+                    FirebaseCloudSyncManager.deleteEventFromCloud(dateStr, unitStr)
+                }
+            }
+            cursor.close()
+        }
         db.delete(TABLE_EVENTS, "$COLUMN_ID = ?", arrayOf(id.toString()))
     }
 
@@ -242,26 +288,34 @@ class AzureDatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE
         }
     }
 
-    fun deleteEventByDateAndUnit(date: String, unit: String): Int {
+    fun deleteEventByDateAndUnit(date: String, unit: String, syncToCloud: Boolean = false): Int {
         val db = this.writableDatabase
         val cleanUnit = unit.replace("Unit", "", ignoreCase = true).trim()
         val normalizedUnit = "Unit $cleanUnit"
-        return db.delete(
+        val rows = db.delete(
             TABLE_EVENTS,
             "$COLUMN_DATE = ? AND ($COLUMN_UNIT LIKE ? OR $COLUMN_UNIT LIKE ? OR $COLUMN_UNIT = ?)",
             arrayOf(date, "%$cleanUnit%", "%$normalizedUnit%", unit)
         )
+        if (syncToCloud && cleanUnit.isNotBlank()) {
+            FirebaseCloudSyncManager.deleteEventFromCloud(date, normalizedUnit)
+        }
+        return rows
     }
 
-    fun deleteEventsForUnit(unit: String): Int {
+    fun deleteEventsForUnit(unit: String, syncToCloud: Boolean = true): Int {
         val db = this.writableDatabase
         val cleanUnit = unit.replace("Unit", "", ignoreCase = true).trim()
         val normalizedUnit = "Unit $cleanUnit"
-        return db.delete(
+        val rows = db.delete(
             TABLE_EVENTS,
             "$COLUMN_UNIT LIKE ? OR $COLUMN_UNIT LIKE ? OR $COLUMN_UNIT = ?",
             arrayOf("%$cleanUnit%", "%$normalizedUnit%", unit)
         )
+        if (syncToCloud && cleanUnit.isNotBlank()) {
+            FirebaseCloudSyncManager.deleteEventFromCloud("", normalizedUnit)
+        }
+        return rows
     }
 
     fun clearAllEvents(): Int {
@@ -272,20 +326,35 @@ class AzureDatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE
     @Suppress("unused")
     fun updateEvent(id: Long, title: String, date: String, time: String, agent: String, unit: String, shape: String, color: Long): Int {
         val db = this.writableDatabase
+        val cleanUnit = unit.replace("Unit", "", ignoreCase = true).trim()
+        val normalizedUnit = "Unit $cleanUnit"
         val values = ContentValues().apply {
             put(COLUMN_TITLE, title)
             put(COLUMN_DATE, date)
             put(COLUMN_TIME, time)
             put(COLUMN_AGENT, agent)
-            put(COLUMN_UNIT, unit)
+            put(COLUMN_UNIT, normalizedUnit)
             put(COLUMN_SHAPE, shape)
             put(COLUMN_COLOR, color)
         }
-        return db.update(TABLE_EVENTS, values, "$COLUMN_ID = ?", arrayOf(id.toString()))
+        val rows = db.update(TABLE_EVENTS, values, "$COLUMN_ID = ?", arrayOf(id.toString()))
+        if (cleanUnit.isNotBlank() && date.isNotBlank()) {
+            FirebaseCloudSyncManager.pushEventToCloud(
+                mapOf(
+                    "title" to title,
+                    "date" to date,
+                    "time" to time,
+                    "agent" to agent,
+                    "unit" to normalizedUnit,
+                    "shape" to shape.ifBlank { "Reserved" },
+                    "color" to color.toString()
+                )
+            )
+        }
+        return rows
     }
 
     // --- Units CRUD ---
-    // Replace insertUnit in AzureDatabaseHelper.kt with this:
     fun insertUnit(
         unitNumber: String,
         tower: String,
@@ -293,13 +362,13 @@ class AzureDatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE
         owner: String,
         rate: Double,
         imageUri: String = "",
-        description: String = "1 Bedroom"
+        description: String = "1 Bedroom",
+        syncToCloud: Boolean = true
     ): Long {
         val db = this.writableDatabase
         val cleanUnit = unitNumber.replace("Unit", "", ignoreCase = true).trim()
         val normalizedUnit = "Unit $cleanUnit"
 
-        // Remove any unformatted duplicate variations (e.g. "12A", "Unit12A") first
         db.delete(
             TABLE_UNITS,
             "$COLUMN_UNIT_NUMBER = ? OR $COLUMN_UNIT_NUMBER = ? OR $COLUMN_UNIT_NUMBER = ?",
@@ -315,10 +384,23 @@ class AzureDatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE
             put(COLUMN_IMAGE, imageUri)
             put(COLUMN_DESCRIPTION, description)
         }
-        return db.insertWithOnConflict(TABLE_UNITS, null, values, SQLiteDatabase.CONFLICT_REPLACE)
+        val rowId = db.insertWithOnConflict(TABLE_UNITS, null, values, SQLiteDatabase.CONFLICT_REPLACE)
+
+        if (syncToCloud && cleanUnit.isNotBlank() && cleanUnit != "TEMP_UNIT") {
+            FirebaseCloudSyncManager.pushFullUnitToCloud(
+                unitNumber = normalizedUnit,
+                tower = tower,
+                description = description,
+                status = status,
+                owner = owner,
+                rate = rate,
+                imageUri = imageUri
+            )
+        }
+        return rowId
     }
 
-    fun updateUnitStatus(unitNumber: String, status: String): Int {
+    fun updateUnitStatus(unitNumber: String, status: String, syncToCloud: Boolean = true): Int {
         val db = this.writableDatabase
         val cleanUnit = unitNumber.replace("Unit", "", ignoreCase = true).trim()
         val normalizedUnit = "Unit $cleanUnit"
@@ -341,8 +423,11 @@ class AzureDatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE
                 owner = "Admin Owner",
                 rate = 2500.0,
                 imageUri = "",
-                description = "1 Bedroom"
+                description = "1 Bedroom",
+                syncToCloud = syncToCloud
             )
+        } else if (syncToCloud && cleanUnit.isNotBlank() && cleanUnit != "TEMP_UNIT") {
+            FirebaseCloudSyncManager.pushUnitStatusToCloud(normalizedUnit, status)
         }
         return rows
     }

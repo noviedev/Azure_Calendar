@@ -3,10 +3,7 @@ package com.example.azurecalendar
 import android.content.Context
 import android.util.Log
 import android.widget.Toast
-import com.google.firebase.firestore.DocumentChange
-import com.google.firebase.firestore.FirebaseFirestore
-import com.google.firebase.firestore.ListenerRegistration
-import com.google.firebase.firestore.SetOptions
+import com.google.firebase.firestore.*
 
 object FirebaseCloudSyncManager {
 
@@ -26,6 +23,21 @@ object FirebaseCloudSyncManager {
     private var agentsListener: ListenerRegistration? = null
     private var deletedUnitsListener: ListenerRegistration? = null
     private var adminProfileListener: ListenerRegistration? = null
+
+    private fun sanitizeDocId(rawId: String): String {
+        return rawId.trim()
+            .replace("/", "-")
+            .replace("\\", "-")
+            .replace(" ", "_")
+            .replace(Regex("[^a-zA-Z0-9_\\-.]"), "")
+            .ifBlank { System.currentTimeMillis().toString() }
+    }
+
+    private fun isSameUnit(unitA: String, unitB: String): Boolean {
+        val cleanA = unitA.replace("Unit", "", ignoreCase = true).trim()
+        val cleanB = unitB.replace("Unit", "", ignoreCase = true).trim()
+        return cleanA.equals(cleanB, ignoreCase = true)
+    }
 
     fun isEventDateExpired(dateStr: String, timeStr: String = "12:00 PM"): Boolean {
         try {
@@ -77,17 +89,31 @@ object FirebaseCloudSyncManager {
             val db = FirebaseFirestore.getInstance()
             val rawUnit = eventData["unit"] ?: ""
             val cleanUnit = rawUnit.replace("Unit", "", ignoreCase = true).trim()
+            val normalizedUnit = if (cleanUnit.isNotBlank()) "Unit $cleanUnit" else rawUnit
             val dateText = eventData["date"] ?: ""
-            val docId = eventData["id"] ?: if (cleanUnit.isNotBlank() && dateText.isNotBlank()) {
-                "${cleanUnit}_${dateText.replace("/", "-").replace(" ", "_")}"
+            val titleText = eventData["title"] ?: "Booking"
+
+            val rawDocId = if (cleanUnit.isNotBlank() && dateText.isNotBlank()) {
+                "${cleanUnit}_${dateText}"
             } else {
-                System.currentTimeMillis().toString()
+                eventData["id"] ?: "${cleanUnit}_${titleText}_${System.currentTimeMillis()}"
+            }
+            val docId = sanitizeDocId(rawDocId)
+
+            val enrichedData = eventData.toMutableMap().apply {
+                put("unit", normalizedUnit)
+                put("cleanUnit", cleanUnit)
+                put("updatedAt", System.currentTimeMillis().toString())
             }
 
             db.collection("events").document(docId)
-                .set(eventData, SetOptions.merge())
+                .set(enrichedData, SetOptions.merge())
                 .addOnSuccessListener {
                     Log.d(TAG, "Event $docId synced to Cloud Firestore!")
+                    val shape = eventData["shape"] ?: ""
+                    if (cleanUnit.isNotBlank() && shape.isNotBlank()) {
+                        pushUnitStatusToCloud(normalizedUnit, shape)
+                    }
                     notifyCloudUpdate()
                 }
                 .addOnFailureListener { e ->
@@ -98,10 +124,58 @@ object FirebaseCloudSyncManager {
         }
     }
 
+    fun syncAllLocalEventsToCloud(context: Context) {
+        try {
+            val dbHelper = AzureDatabaseHelper(context.applicationContext)
+            val localEvents = dbHelper.getAllEvents()
+            for (evt in localEvents) {
+                val date = evt["date"]?.toString() ?: ""
+                val time = evt["time"]?.toString() ?: "2:00 PM"
+                val unit = evt["unit"]?.toString() ?: ""
+                if (unit.isNotBlank() && date.isNotBlank() && !isEventDateExpired(date, time)) {
+                    val eventMap = mapOf(
+                        "title" to (evt["title"]?.toString() ?: "Booking"),
+                        "date" to date,
+                        "time" to time,
+                        "agent" to (evt["agent"]?.toString() ?: "Agent"),
+                        "unit" to unit,
+                        "shape" to (evt["shape"]?.toString() ?: "Reserved"),
+                        "color" to (evt["color"]?.toString() ?: "0")
+                    )
+                    pushEventToCloud(eventMap)
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error syncing local events to cloud: ${e.message}")
+        }
+    }
+
+    fun syncAllLocalAgentsToCloud(context: Context) {
+        try {
+            val dbHelper = AzureDatabaseHelper(context.applicationContext)
+            val localAgents = dbHelper.getAllAgents()
+            for (agent in localAgents) {
+                val name = agent["name"] ?: continue
+                val email = agent["email"] ?: continue
+                val phone = agent["phone"] ?: ""
+                val role = agent["position"] ?: agent["role"] ?: "Agent"
+                val gender = agent["gender"] ?: "Female"
+                if (name.isNotBlank() && email.isNotBlank()) {
+                    pushAgentToCloud(name, email, phone, role, gender)
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error syncing local agents to cloud: ${e.message}")
+        }
+    }
+
     fun deleteEventFromCloud(dateText: String, unitName: String) {
         try {
             val db = FirebaseFirestore.getInstance()
             val cleanUnit = unitName.replace("Unit", "", ignoreCase = true).trim()
+            val directDocId = sanitizeDocId("${cleanUnit}_${dateText}")
+            db.collection("events").document(directDocId).delete()
+
             db.collection("events")
                 .get()
                 .addOnSuccessListener { query ->
@@ -143,7 +217,7 @@ object FirebaseCloudSyncManager {
             db.collection("units").document(cleanUnit)
                 .set(unitData, SetOptions.merge())
                 .addOnSuccessListener {
-                    Log.d(TAG, "Unit $normalizedUnit status -> $status synced to units!")
+                    Log.d(TAG, "Unit $normalizedUnit status ->$status synced to units!")
                     notifyCloudUpdate()
                 }
                 .addOnFailureListener { e ->
@@ -186,7 +260,6 @@ object FirebaseCloudSyncManager {
                 "updatedAt" to System.currentTimeMillis()
             )
 
-            // Save complete document data to units_catalog so agents receive full details
             db.collection("units_catalog").document(cleanUnit).set(unitData, SetOptions.merge())
             db.collection("units_catalog").document(cleanUnit.uppercase()).set(unitData, SetOptions.merge())
             db.collection("units").document(cleanUnit).set(unitData, SetOptions.merge())
@@ -209,7 +282,10 @@ object FirebaseCloudSyncManager {
             if (cleanUnit.isBlank()) return
 
             db.collection("units_catalog").document(cleanUnit).delete()
+            db.collection("units_catalog").document(cleanUnit.uppercase()).delete()
             db.collection("units").document(cleanUnit).delete()
+            db.collection("units").document(cleanUnit.uppercase()).delete()
+            db.collection("units").document("Unit $cleanUnit").delete()
 
             val deletedPrefs = context.getSharedPreferences("azure_calendar_deleted_units", Context.MODE_PRIVATE)
             val currentSet = deletedPrefs.getStringSet("deleted_unit_numbers", emptySet()).orEmpty().toMutableSet()
@@ -224,7 +300,6 @@ object FirebaseCloudSyncManager {
         }
     }
 
-    // Add this inside FirebaseCloudSyncManager.kt:
     fun syncAllLocalUnitsToCloud(context: Context) {
         try {
             val dbHelper = AzureDatabaseHelper(context.applicationContext)
@@ -262,10 +337,14 @@ object FirebaseCloudSyncManager {
                     imageUri = uImg
                 )
             }
+
+            syncAllLocalEventsToCloud(context)
+            syncAllLocalAgentsToCloud(context)
         } catch (e: Exception) {
             Log.e(TAG, "Error syncing all local units: ${e.message}")
         }
     }
+
     fun pushAgentToCloud(name: String, email: String, phone: String, role: String, gender: String) {
         try {
             val db = FirebaseFirestore.getInstance()
@@ -277,8 +356,8 @@ object FirebaseCloudSyncManager {
                 "gender" to gender,
                 "updatedAt" to System.currentTimeMillis()
             )
-            val docKey = name.replace(" ", "_").lowercase()
-            db.collection("agents").document(docKey).set(agentData)
+            val docKey = sanitizeDocId(email.ifBlank { name }.lowercase())
+            db.collection("agents").document(docKey).set(agentData, SetOptions.merge())
         } catch (e: Exception) {
             Log.e(TAG, "Agent push error: ${e.message}")
         }
@@ -314,6 +393,9 @@ object FirebaseCloudSyncManager {
             val dbHelper = AzureDatabaseHelper(appContext)
             val db = FirebaseFirestore.getInstance()
 
+            syncAllLocalEventsToCloud(appContext)
+            syncAllLocalAgentsToCloud(appContext)
+
             db.collection("_connection_test").document("test_probe")
                 .set(mapOf("timestamp" to System.currentTimeMillis()))
                 .addOnSuccessListener {
@@ -326,7 +408,7 @@ object FirebaseCloudSyncManager {
                     }
                 }
 
-            // 1. Real-Time Events & Booking Listener
+            // 1. Real-Time Events Listener
             eventsListener?.remove()
             eventsListener = db.collection("events")
                 .addSnapshotListener { snapshots, e ->
@@ -337,47 +419,57 @@ object FirebaseCloudSyncManager {
                     try {
                         for (change in snapshots.documentChanges) {
                             if (change.type == DocumentChange.Type.REMOVED) {
+                                val removedId = change.document.id
+                                val removedDate = change.document.getString("date") ?: ""
                                 val removedUnit = change.document.getString("unit") ?: ""
-                                val cleanRemoved = removedUnit.replace("Unit", "", ignoreCase = true).trim()
-                                if (cleanRemoved.isNotBlank()) {
-                                    dbHelper.deleteEventsForUnit("Unit $cleanRemoved")
-                                    dbHelper.deleteEventsForUnit(cleanRemoved)
+                                if (removedId.isNotBlank()) {
+                                    dbHelper.deleteEventByIdOrTitle(removedId)
+                                }
+                                if (removedDate.isNotBlank() && removedUnit.isNotBlank()) {
+                                    dbHelper.deleteEventByDateAndUnit(removedDate, removedUnit, syncToCloud = false)
                                 }
                             }
                         }
 
-                        dbHelper.clearAllEvents()
-
-                        for (doc in snapshots.documents) {
-                            val title = doc.getString("title") ?: "Booking"
-                            val date = doc.getString("date") ?: ""
-                            val time = doc.getString("time") ?: "2:00 PM"
-                            val agent = doc.getString("agent") ?: "Agent"
-                            val rawUnit = doc.getString("unit") ?: ""
-                            val cleanUnit = rawUnit.replace("Unit", "", ignoreCase = true).trim()
-                            val normalizedUnit = "Unit $cleanUnit"
-                            val shape = doc.getString("shape") ?: "Available"
-
-                            val rawColor = doc.get("color")
-                            val colorLong = when (rawColor) {
-                                is Number -> rawColor.toLong()
-                                is String -> rawColor.toLongOrNull() ?: 0L
-                                else -> 0L
+                        if (snapshots.documents.isEmpty()) {
+                            val localCheck = dbHelper.getAllEvents()
+                            if (localCheck.isNotEmpty()) {
+                                syncAllLocalEventsToCloud(appContext)
                             }
+                        } else {
+                            dbHelper.clearAllEvents()
+                            for (doc in snapshots.documents) {
+                                val title = doc.getString("title") ?: "Booking"
+                                val date = doc.getString("date") ?: ""
+                                val time = doc.getString("time") ?: "2:00 PM"
+                                val agent = doc.getString("agent") ?: "Agent"
+                                val rawUnit = doc.getString("unit") ?: ""
+                                val cleanUnit = rawUnit.replace("Unit", "", ignoreCase = true).trim()
+                                val normalizedUnit = "Unit $cleanUnit"
+                                val shape = doc.getString("shape") ?: "Available"
 
-                            if (cleanUnit.isNotBlank() && date.isNotBlank()) {
-                                if (!isEventDateExpired(date, time)) {
-                                    dbHelper.insertEvent(
-                                        title = title,
-                                        date = date,
-                                        time = time,
-                                        agent = agent,
-                                        unit = normalizedUnit,
-                                        shape = shape,
-                                        color = colorLong
-                                    )
-                                    dbHelper.updateUnitStatus(normalizedUnit, shape)
-                                    dbHelper.updateUnitStatus(cleanUnit, shape)
+                                val rawColor = doc.get("color")
+                                val colorLong = when (rawColor) {
+                                    is Number -> rawColor.toLong()
+                                    is String -> rawColor.toLongOrNull() ?: 0L
+                                    else -> 0L
+                                }
+
+                                if (cleanUnit.isNotBlank() && date.isNotBlank()) {
+                                    if (!isEventDateExpired(date, time)) {
+                                        dbHelper.insertEvent(
+                                            title = title,
+                                            date = date,
+                                            time = time,
+                                            agent = agent,
+                                            unit = normalizedUnit,
+                                            shape = shape,
+                                            color = colorLong,
+                                            syncToCloud = false
+                                        )
+                                        dbHelper.updateUnitStatus(normalizedUnit, shape, syncToCloud = false)
+                                        dbHelper.updateUnitStatus(cleanUnit, shape, syncToCloud = false)
+                                    }
                                 }
                             }
                         }
@@ -403,15 +495,15 @@ object FirebaseCloudSyncManager {
                         val uStat = doc.getString("status") ?: "Available"
 
                         if (cleanNum.isNotBlank()) {
-                            dbHelper.updateUnitStatus(uNum, uStat)
-                            dbHelper.updateUnitStatus(cleanNum, uStat)
+                            dbHelper.updateUnitStatus(uNum, uStat, syncToCloud = false)
+                            dbHelper.updateUnitStatus(cleanNum, uStat, syncToCloud = false)
                         }
                     }
                     notifyCloudUpdate()
                     onSyncTriggered()
                 }
 
-            // 3. Units Catalog Listener (Enforces exact Owner unit catalog sync & auto-purge)
+            // 3. Units Catalog Listener
             unitsCatalogListener?.remove()
             unitsCatalogListener = db.collection("units_catalog")
                 .addSnapshotListener { snapshots, e ->
@@ -440,9 +532,9 @@ object FirebaseCloudSyncManager {
                             val upperClean = cleanNum.uppercase()
                             cloudCleanNumbers.add(upperClean)
                             cloudCleanNumbers.add(cleanNum)
-                            dbHelper.insertUnit(uNum, uTow, uStat, uOwn, uRate, uImg, uDesc)
-                            dbHelper.updateUnitStatus(uNum, uStat)
-                            dbHelper.updateUnitStatus(cleanNum, uStat)
+                            dbHelper.insertUnit(uNum, uTow, uStat, uOwn, uRate, uImg, uDesc, syncToCloud = false)
+                            dbHelper.updateUnitStatus(uNum, uStat, syncToCloud = false)
+                            dbHelper.updateUnitStatus(cleanNum, uStat, syncToCloud = false)
 
                             if (currentDeletedSet.removeAll { isSameUnit(it, cleanNum) || isSameUnit(it, uNum) }) {
                                 deletedSetChanged = true
@@ -454,26 +546,26 @@ object FirebaseCloudSyncManager {
                         deletedPrefs.edit().putStringSet("deleted_unit_numbers", currentDeletedSet).apply()
                     }
 
-                    // Re-apply active event statuses to units so event statuses like Check-in or Reserved are preserved
                     val activeEvents = dbHelper.getAllEvents()
                     for (evt in activeEvents) {
                         val evtUnit = evt["unit"] ?: ""
                         val evtShape = evt["shape"] ?: ""
                         val evtDate = evt["date"] ?: ""
                         if (evtUnit.isNotBlank() && evtShape.isNotBlank() && !isEventDateExpired(evtDate)) {
-                            dbHelper.updateUnitStatus(evtUnit, evtShape)
+                            dbHelper.updateUnitStatus(evtUnit, evtShape, syncToCloud = false)
                         }
                     }
 
-                    // Purge local units not present in Owner's cloud catalog
-                    val localUnits = dbHelper.getAllUnits()
-                    val defaultCleanNums = setOf("12A", "15B", "08C", "06D")
-                    for (localUnit in localUnits) {
-                        val localNumRaw = localUnit["unitNumber"]?.toString() ?: ""
-                        val cleanLocal = localNumRaw.replace("Unit", "", ignoreCase = true).trim().uppercase()
-                        if (cleanLocal.isNotBlank() && !cloudCleanNumbers.contains(cleanLocal) && !cloudCleanNumbers.contains(cleanLocal.lowercase()) && !defaultCleanNums.contains(cleanLocal)) {
-                            dbHelper.deleteUnit(cleanLocal)
-                            dbHelper.deleteUnit("Unit $cleanLocal")
+                    if (cloudCleanNumbers.isNotEmpty()) {
+                        val localUnits = dbHelper.getAllUnits()
+                        val defaultCleanNums = setOf("12A", "15B", "08C", "06D")
+                        for (localUnit in localUnits) {
+                            val localNumRaw = localUnit["unitNumber"]?.toString() ?: ""
+                            val cleanLocal = localNumRaw.replace("Unit", "", ignoreCase = true).trim().uppercase()
+                            if (cleanLocal.isNotBlank() && !cloudCleanNumbers.contains(cleanLocal) && !cloudCleanNumbers.contains(cleanLocal.lowercase()) && !defaultCleanNums.contains(cleanLocal)) {
+                                dbHelper.deleteUnit(cleanLocal)
+                                dbHelper.deleteUnit("Unit $cleanLocal")
+                            }
                         }
                     }
 
@@ -519,7 +611,7 @@ object FirebaseCloudSyncManager {
                             val aGender = doc.getString("gender") ?: "Female"
 
                             if (aName.isNotBlank() && aEmail.isNotBlank()) {
-                                dbHelper.insertAgent(aName, aEmail, aPhone, aRole, aGender)
+                                dbHelper.insertAgent(aName, aEmail, aPhone, aRole, aGender, syncToCloud = false)
                             }
                         }
                         notifyCloudUpdate()
