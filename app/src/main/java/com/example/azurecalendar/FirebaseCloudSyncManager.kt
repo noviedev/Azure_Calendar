@@ -318,14 +318,21 @@ object FirebaseCloudSyncManager {
                     deletedSet.none { isSameUnit(it, num) }
                 }
 
+            val activeEvents = dbHelper.getAllEvents()
             for (u in allUnits) {
                 val uNum = u["unitNumber"]?.toString() ?: continue
                 val uTow = u["tower"]?.toString() ?: "Azure Tower"
-                val uStat = u["status"]?.toString() ?: "Available"
                 val uOwn = u["owner"]?.toString() ?: "Owner"
                 val uRate = (u["rate"] as? Number)?.toDouble() ?: 2500.0
                 val uImg = u["image_uri"]?.toString() ?: ""
                 val uDesc = u["description"]?.toString() ?: "1 Bedroom"
+
+                val matchingEvent = activeEvents.find { evt ->
+                    val evtUnit = evt["unit"] ?: ""
+                    isSameUnit(evtUnit, uNum)
+                }
+                val activeStatus = matchingEvent?.get("shape")?.ifBlank { null }
+                val uStat = activeStatus ?: (u["status"]?.toString() ?: "Available")
 
                 pushFullUnitToCloud(
                     unitNumber = uNum,
@@ -393,18 +400,28 @@ object FirebaseCloudSyncManager {
             val dbHelper = AzureDatabaseHelper(appContext)
             val db = FirebaseFirestore.getInstance()
 
+            try {
+                db.enableNetwork()
+            } catch (_: Exception) {}
+
+            val authUser = com.google.firebase.auth.FirebaseAuth.getInstance().currentUser
+            val userLabel = authUser?.email ?: authUser?.uid ?: "Anonymous"
+
             syncAllLocalEventsToCloud(appContext)
             syncAllLocalAgentsToCloud(appContext)
 
             db.collection("_connection_test").document("test_probe")
-                .set(mapOf("timestamp" to System.currentTimeMillis()))
+                .set(mapOf("timestamp" to System.currentTimeMillis(), "user" to userLabel))
                 .addOnSuccessListener {
-                    Log.d(TAG, "FIRESTORE SYNC CONNECTED OK!")
+                    Log.d(TAG, "FIRESTORE SYNC CONNECTED OK! User: $userLabel")
+                    android.os.Handler(android.os.Looper.getMainLooper()).post {
+                        Toast.makeText(appContext, "Cloud Sync Active ($userLabel)", Toast.LENGTH_SHORT).show()
+                    }
                 }
                 .addOnFailureListener { err: Exception ->
                     Log.e(TAG, "FIRESTORE CONNECTION BLOCKED: ${err.message}")
                     android.os.Handler(android.os.Looper.getMainLooper()).post {
-                        Toast.makeText(appContext, "Firestore Sync Error: ${err.message}", Toast.LENGTH_LONG).show()
+                        Toast.makeText(appContext, "Cloud Sync Error: ${err.message}", Toast.LENGTH_LONG).show()
                     }
                 }
 
@@ -414,6 +431,7 @@ object FirebaseCloudSyncManager {
                 .addSnapshotListener { snapshots, e ->
                     if (e != null || snapshots == null) {
                         Log.e(TAG, "Events listener error: ${e?.message}")
+                        try { db.enableNetwork() } catch (_: Exception) {}
                         return@addSnapshotListener
                     }
                     try {
@@ -486,6 +504,7 @@ object FirebaseCloudSyncManager {
                 .addSnapshotListener { snapshots, e ->
                     if (e != null || snapshots == null) {
                         Log.e(TAG, "Units listener error: ${e?.message}")
+                        try { db.enableNetwork() } catch (_: Exception) {}
                         return@addSnapshotListener
                     }
                     for (doc in snapshots.documents) {
@@ -509,6 +528,7 @@ object FirebaseCloudSyncManager {
                 .addSnapshotListener { snapshots, e ->
                     if (e != null || snapshots == null) {
                         Log.e(TAG, "Units catalog listener error: ${e?.message}")
+                        try { db.enableNetwork() } catch (_: Exception) {}
                         return@addSnapshotListener
                     }
 

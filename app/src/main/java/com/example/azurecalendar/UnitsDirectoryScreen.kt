@@ -188,11 +188,26 @@ fun UnitsDirectoryScreen(
 
         // Update each unit's status depending on the selected DATE in SQLite!
         allUnitsList.map { unitItem ->
+            val fullMonthName = monthsList[selectedMonthIndex]
+            val monthNum = selectedMonthIndex + 1
+            val monthNumStr = String.format("%02d", monthNum)
+
             val matchingEvent = dbEventsState.value.find { evt ->
                 val evtDate = evt["date"] ?: ""
                 val evtUnit = evt["unit"] ?: ""
-                val monthMatches = evtDate.contains(shortMonthName, ignoreCase = true)
-                val yearMatches = evtDate.contains(selectedYearNumber.toString())
+
+                val monthMatches = evtDate.isBlank() ||
+                        evtDate.contains(shortMonthName, ignoreCase = true) ||
+                        evtDate.contains(fullMonthName, ignoreCase = true) ||
+                        evtDate.contains("/$monthNum/") ||
+                        evtDate.contains("/$monthNumStr/") ||
+                        evtDate.contains("-$monthNum-") ||
+                        evtDate.contains("-$monthNumStr-")
+
+                val yearMatches = evtDate.isBlank() ||
+                        evtDate.contains(selectedYearNumber.toString()) ||
+                        evtDate.contains(selectedYearNumber.toString().takeLast(2))
+
                 val dateMatches = isDateCoveredByEvent(evtDate, selectedDayNumber)
                 val unitMatches = isSameUnit(evtUnit, unitItem.unitNumber)
                 monthMatches && yearMatches && dateMatches && unitMatches
