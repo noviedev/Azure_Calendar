@@ -494,7 +494,15 @@ object FirebaseCloudSyncManager {
                 "updatedAt" to System.currentTimeMillis()
             )
             val docKey = sanitizeDocId(email.ifBlank { name }.lowercase())
-            db.collection("agents").document(docKey).set(agentData, SetOptions.merge())
+            db.collection("agents").document(docKey)
+                .set(agentData, SetOptions.merge())
+                .addOnSuccessListener {
+                    Log.d(TAG, "Agent $name ($email) synced to Cloud Firestore!")
+                    notifyCloudUpdate()
+                }
+                .addOnFailureListener { e ->
+                    Log.e(TAG, "Agent cloud push failed: ${e.message}")
+                }
         } catch (e: Exception) {
             Log.e(TAG, "Agent push error: ${e.message}")
         }

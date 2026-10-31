@@ -337,9 +337,12 @@ fun UnitDetailsScreen(
                 val parts = currentEventDate.split("-", "to", ignoreCase = true)
                 val p1 = parts[0].trim()
                 val p2 = parts.getOrNull(1)?.trim() ?: p1
-                val yr = Regex("\\b20\\d{2}\\b").find(currentEventDate)?.value ?: activeYear.toString()
-                val p1Full = if (p1.contains(yr)) p1 else "$p1, $yr"
-                val p2Full = if (p2.contains(yr)) p2 else "$p2, $yr"
+                val hasP1Year = Regex("\\b20\\d{2}\\b").containsMatchIn(p1)
+                val hasP2Year = Regex("\\b20\\d{2}\\b").containsMatchIn(p2)
+                val fallbackYear = Regex("\\b20\\d{2}\\b").find(currentEventDate)?.value ?: activeYear.toString()
+
+                val p1Full = if (hasP1Year) p1 else "$p1, $fallbackYear"
+                val p2Full = if (hasP2Year) p2 else "$p2, $fallbackYear"
                 Pair(p1Full, p2Full)
             } else if (currentEventDate.isNotBlank()) {
                 Pair(currentEventDate, currentEventDate)

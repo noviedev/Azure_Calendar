@@ -86,7 +86,7 @@ fun AzureCalendarView(
             .fillMaxWidth()
             .background(AzureCalendarColors.ScreenBg)
     ) {
-        // Top Title Bar
+        // Top Title Bar with Realtime Today Jump Button
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -98,16 +98,93 @@ fun AzureCalendarView(
                 fontWeight = FontWeight.Bold,
                 color = AzureCalendarColors.TextDark
             )
+
+            // Today Button to quickly jump back to real-time current date
+            Surface(
+                shape = RoundedCornerShape(12.dp),
+                color = AzureCalendarColors.PurplePrimary,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(12.dp))
+                    .clickable {
+                        val realCal = java.util.Calendar.getInstance()
+                        val todayMIdx = realCal.get(java.util.Calendar.MONTH)
+                        val todayYr = realCal.get(java.util.Calendar.YEAR)
+                        val todayDay = realCal.get(java.util.Calendar.DAY_OF_MONTH)
+                        val todayMName = monthsList[todayMIdx]
+
+                        currentMonthTitle = "$todayMName $todayYr"
+                        selectedMonthIndex = todayMIdx
+                        selectedYear = todayYr
+                        onMonthYearSelected(todayMName, todayYr)
+                        onDaySelected(
+                            DayScheduleModel(
+                                dayNumber = todayDay,
+                                month = todayMIdx + 1,
+                                year = todayYr,
+                                dayType = CalendarDayType.WEEKDAY,
+                                assignedShape = null,
+                                events = emptyList(),
+                                customColor = null
+                            )
+                        )
+                    }
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Today,
+                        contentDescription = "Jump to Today",
+                        tint = Color.White,
+                        modifier = Modifier.size(14.dp)
+                    )
+                    Text(
+                        text = "Today",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color.White
+                    )
+                }
+            }
         }
 
         Spacer(modifier = Modifier.height(16.dp))
 
-        // Month & Year Selector Bar (September 2026)
+        // Month & Year Selector Bar with Continuous Prev (<) and Next (>) Arrow Buttons
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.Center,
+            horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
+            IconButton(
+                onClick = {
+                    val currentIdx = monthsList.indexOfFirst { currentMonthTitle.contains(it, ignoreCase = true) }.let { if (it != -1) it else defaultCurrentMonthIdx }
+                    val currentYr = Regex("\\b20\\d{2}\\b").find(currentMonthTitle)?.value?.toIntOrNull() ?: defaultCurrentYear
+
+                    val (newMonthIdx, newYr) = if (currentIdx > 0) {
+                        Pair(currentIdx - 1, currentYr)
+                    } else {
+                        Pair(11, currentYr - 1)
+                    }
+
+                    val newMonthName = monthsList[newMonthIdx]
+                    val newTitle = "$newMonthName $newYr"
+                    currentMonthTitle = newTitle
+                    selectedMonthIndex = newMonthIdx
+                    selectedYear = newYr
+                    onMonthYearSelected(newMonthName, newYr)
+                },
+                modifier = Modifier.size(36.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.KeyboardArrowLeft,
+                    contentDescription = "Previous Month",
+                    tint = AzureCalendarColors.PurplePrimary
+                )
+            }
+
             Surface(
                 shape = RoundedCornerShape(12.dp),
                 color = Color(0xFFF3EDFD),
@@ -132,6 +209,33 @@ fun AzureCalendarView(
                         tint = AzureCalendarColors.PurplePrimary
                     )
                 }
+            }
+
+            IconButton(
+                onClick = {
+                    val currentIdx = monthsList.indexOfFirst { currentMonthTitle.contains(it, ignoreCase = true) }.let { if (it != -1) it else defaultCurrentMonthIdx }
+                    val currentYr = Regex("\\b20\\d{2}\\b").find(currentMonthTitle)?.value?.toIntOrNull() ?: defaultCurrentYear
+
+                    val (newMonthIdx, newYr) = if (currentIdx < 11) {
+                        Pair(currentIdx + 1, currentYr)
+                    } else {
+                        Pair(0, currentYr + 1)
+                    }
+
+                    val newMonthName = monthsList[newMonthIdx]
+                    val newTitle = "$newMonthName $newYr"
+                    currentMonthTitle = newTitle
+                    selectedMonthIndex = newMonthIdx
+                    selectedYear = newYr
+                    onMonthYearSelected(newMonthName, newYr)
+                },
+                modifier = Modifier.size(36.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                    contentDescription = "Next Month",
+                    tint = AzureCalendarColors.PurplePrimary
+                )
             }
         }
 
@@ -189,8 +293,8 @@ fun AzureCalendarView(
                         val taggedShapeResList = dayModel.events.mapNotNull { evt ->
                             val shapeName = evt.description
                             when {
+                                shapeName.isBlank() || shapeName.contains("Available", ignoreCase = true) || shapeName.contains("Four", ignoreCase = true) -> null
                                 shapeName.contains("Not", ignoreCase = true) || shapeName.contains("Star", ignoreCase = true) -> R.drawable.star
-                                shapeName.contains("Four", ignoreCase = true) || shapeName.equals("Available", ignoreCase = true) -> R.drawable.four_leaf_clover
                                 shapeName.contains("Heart", ignoreCase = true) || shapeName.contains("Check", ignoreCase = true) -> R.drawable.heart
                                 shapeName.contains("Diamond", ignoreCase = true) || shapeName.contains("Reserve", ignoreCase = true) -> R.drawable.diamond
                                 shapeName.contains("Circle", ignoreCase = true) || shapeName.contains("Maintenance", ignoreCase = true) -> R.drawable.circle
@@ -366,8 +470,8 @@ fun AzureCalendarView(
                             val taggedShapeResList = dayModel.events.mapNotNull { evt ->
                                 val shapeName = evt.description
                                 when {
+                                    shapeName.isBlank() || shapeName.contains("Available", ignoreCase = true) || shapeName.contains("Four", ignoreCase = true) -> null
                                     shapeName.contains("Not", ignoreCase = true) || shapeName.contains("Star", ignoreCase = true) -> R.drawable.star
-                                    shapeName.contains("Four", ignoreCase = true) || shapeName.equals("Available", ignoreCase = true) -> R.drawable.four_leaf_clover
                                     shapeName.contains("Heart", ignoreCase = true) || shapeName.contains("Check", ignoreCase = true) -> R.drawable.heart
                                     shapeName.contains("Diamond", ignoreCase = true) || shapeName.contains("Reserve", ignoreCase = true) || shapeName.contains("Extend", ignoreCase = true) -> R.drawable.diamond
                                     shapeName.contains("Circle", ignoreCase = true) || shapeName.contains("Maintenance", ignoreCase = true) -> R.drawable.circle
@@ -628,7 +732,7 @@ fun AzureCalendarView(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        IconButton(onClick = { if (selectedYear > 2020) selectedYear-- }) {
+                        IconButton(onClick = { selectedYear-- }) {
                             Icon(
                                 imageVector = Icons.AutoMirrored.Filled.KeyboardArrowLeft,
                                 contentDescription = "Prev Year",
@@ -643,7 +747,7 @@ fun AzureCalendarView(
                             color = AzureCalendarColors.PurplePrimary
                         )
 
-                        IconButton(onClick = { if (selectedYear < 2030) selectedYear++ }) {
+                        IconButton(onClick = { selectedYear++ }) {
                             Icon(
                                 imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
                                 contentDescription = "Next Year",

@@ -52,9 +52,30 @@ fun AgentsListScreen(
     LaunchedEffect(Unit, FirebaseCloudSyncManager.globalCloudSyncTrigger.intValue) {
         try {
             val dbHelper = AzureDatabaseHelper(context)
-            registeredAgents.value = dbHelper.getAllAgents().distinctBy {
+            val localList = dbHelper.getAllAgents()
+            registeredAgents.value = localList.distinctBy {
                 it["email"]?.lowercase()?.ifBlank { it["name"]?.lowercase() }
             }
+
+            com.google.firebase.firestore.FirebaseFirestore.getInstance().collection("agents")
+                .get()
+                .addOnSuccessListener { query ->
+                    for (doc in query.documents) {
+                        val aName = doc.getString("name") ?: ""
+                        val aEmail = doc.getString("email") ?: ""
+                        val aPhone = doc.getString("phone") ?: ""
+                        val aRole = doc.getString("role") ?: "Property Agent"
+                        val aGender = doc.getString("gender") ?: "Female"
+
+                        if (aName.isNotBlank() && aEmail.isNotBlank()) {
+                            dbHelper.insertAgent(aName, aEmail, aPhone, aRole, aGender, syncToCloud = false)
+                        }
+                    }
+                    val updatedList = dbHelper.getAllAgents()
+                    registeredAgents.value = updatedList.distinctBy {
+                        it["email"]?.lowercase()?.ifBlank { it["name"]?.lowercase() }
+                    }
+                }
         } catch (_: Exception) {}
     }
 

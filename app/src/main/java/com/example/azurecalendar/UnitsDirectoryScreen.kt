@@ -51,7 +51,16 @@ private val BorderPurple = Color(0xFFE0D0EC)
 fun isDateCoveredByEvent(evtDate: String, dayNumber: Int, currentMonthName: String = ""): Boolean {
     if (evtDate.isBlank()) return false
 
-    val monthNamesList = listOf("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec")
+    val monthMap = mapOf(
+        "jan" to 1, "feb" to 2, "mar" to 3, "apr" to 4, "may" to 5, "jun" to 6,
+        "jul" to 7, "aug" to 8, "sep" to 9, "sept" to 9, "oct" to 10, "nov" to 11, "dec" to 12,
+        "january" to 1, "february" to 2, "march" to 3, "april" to 4, "june" to 6,
+        "july" to 7, "august" to 8, "september" to 9, "october" to 10, "november" to 11, "december" to 12
+    )
+
+    val activeMonthIdx = if (currentMonthName.isNotBlank()) {
+        monthMap.entries.find { currentMonthName.contains(it.key, ignoreCase = true) }?.value ?: 0
+    } else 0
 
     if (evtDate.contains("-") || evtDate.contains("to", ignoreCase = true)) {
         val parts = evtDate.split("-", "to", ignoreCase = true)
@@ -62,16 +71,21 @@ fun isDateCoveredByEvent(evtDate: String, dayNumber: Int, currentMonthName: Stri
             val startNum = Regex("\\b([1-9]|[12][0-9]|3[01])\\b").find(part1)?.value?.toIntOrNull()
             val endNum = Regex("\\b([1-9]|[12][0-9]|3[01])\\b").find(part2)?.value?.toIntOrNull()
 
-            val startMonth = monthNamesList.find { part1.contains(it, ignoreCase = true) }
-            val endMonth = monthNamesList.find { part2.contains(it, ignoreCase = true) }
+            val startMonth = monthMap.entries.find { part1.contains(it.key, ignoreCase = true) }?.value
+            val endMonth = monthMap.entries.find { part2.contains(it.key, ignoreCase = true) }?.value ?: startMonth
 
-            if (startNum != null && endNum != null) {
-                if (startMonth != null && endMonth != null && startMonth != endMonth && currentMonthName.isNotBlank()) {
-                    val activeM = currentMonthName.take(3).lowercase()
-                    if (activeM == startMonth) {
-                        return dayNumber >= startNum
-                    } else if (activeM == endMonth) {
-                        return dayNumber <= endNum
+            if (startNum != null && endNum != null && startMonth != null && endMonth != null) {
+                if (activeMonthIdx != 0) {
+                    if (startMonth == endMonth) {
+                        if (activeMonthIdx != startMonth) return false
+                        return dayNumber in minOf(startNum, endNum)..maxOf(startNum, endNum)
+                    } else {
+                        return when (activeMonthIdx) {
+                            startMonth -> dayNumber >= startNum
+                            endMonth -> dayNumber <= endNum
+                            in (startMonth + 1) until endMonth -> true
+                            else -> false
+                        }
                     }
                 }
 
@@ -82,14 +96,13 @@ fun isDateCoveredByEvent(evtDate: String, dayNumber: Int, currentMonthName: Stri
         }
     }
 
-    val dayNums = Regex("\\b([1-9]|[12][0-9]|3[01])\\b")
-        .findAll(evtDate)
-        .mapNotNull { it.value.toIntOrNull() }
-        .toList()
+    val evtMonth = monthMap.entries.find { evtDate.contains(it.key, ignoreCase = true) }?.value
+    if (activeMonthIdx != 0 && evtMonth != null && evtMonth != activeMonthIdx) {
+        return false
+    }
 
-    return dayNums.contains(dayNumber)
-
-
+    val dayNum = Regex("\\b([1-9]|[12][0-9]|3[01])\\b").find(evtDate)?.value?.toIntOrNull()
+    return dayNum == dayNumber
 }
 
 fun isSameUnit(unit1: String, unit2: String): Boolean {
@@ -190,29 +203,16 @@ fun UnitsDirectoryScreen(
             }
 
         allUnitsList.map { unitItem ->
-            val fullMonthName = monthsList[selectedMonthIndex]
-            val monthNum = selectedMonthIndex + 1
-            val monthNumStr = String.format("%02d", monthNum)
-
             val matchingEvent = dbEventsState.value.find { evt ->
                 val evtDate = evt["date"] ?: ""
                 val evtUnit = evt["unit"] ?: ""
 
-                val monthMatches = evtDate.isBlank() ||
-                        evtDate.contains(shortMonthName, ignoreCase = true) ||
-                        evtDate.contains(fullMonthName, ignoreCase = true) ||
-                        evtDate.contains("/$monthNum/") ||
-                        evtDate.contains("/$monthNumStr/") ||
-                        evtDate.contains("-$monthNum-") ||
-                        evtDate.contains("-$monthNumStr-")
+                val evtYear = Regex("\\b20\\d{2}\\b").find(evtDate)?.value?.toIntOrNull()
+                val yearMatches = evtYear == null || evtYear == selectedYearNumber
 
-                val yearMatches = evtDate.isBlank() ||
-                        evtDate.contains(selectedYearNumber.toString()) ||
-                        evtDate.contains(selectedYearNumber.toString().takeLast(2))
-
-                val dateMatches = isDateCoveredByEvent(evtDate, selectedDayNumber)
+                val dateMatches = isDateCoveredByEvent(evtDate, selectedDayNumber, shortMonthName)
                 val unitMatches = isSameUnit(evtUnit, unitItem.unitNumber)
-                monthMatches && yearMatches && dateMatches && unitMatches
+                yearMatches && dateMatches && unitMatches
             }
 
             val dynamicStatus = when {
@@ -225,10 +225,10 @@ fun UnitsDirectoryScreen(
                         combined.contains("Reserve", ignoreCase = true) || combined.contains("Diamond", ignoreCase = true) -> "Reserved"
                         combined.contains("Maintenance", ignoreCase = true) || combined.contains("Circle", ignoreCase = true) -> "Under Maintenance"
                         combined.contains("Not", ignoreCase = true) || combined.contains("Star", ignoreCase = true) -> "Not Available"
-                        else -> "Available"
+                        else -> shape.ifBlank { "Available" }
                     }
                 }
-                else -> unitItem.status
+                else -> "Available"
             }
 
             unitItem.copy(status = dynamicStatus)
@@ -351,6 +351,39 @@ fun UnitsDirectoryScreen(
                                 contentDescription = "Next",
                                 tint = PurplePrimary
                             )
+                        }
+
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = PurplePrimary,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(12.dp))
+                                .clickable {
+                                    val realCal = java.util.Calendar.getInstance()
+                                    selectedDayNumber = realCal.get(java.util.Calendar.DAY_OF_MONTH)
+                                    selectedMonthIndex = realCal.get(java.util.Calendar.MONTH)
+                                    selectedYearNumber = realCal.get(java.util.Calendar.YEAR)
+                                    onDateChange(selectedDayNumber)
+                                }
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Today,
+                                    contentDescription = "Today",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(12.dp)
+                                )
+                                Text(
+                                    text = "Today",
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color.White
+                                )
+                            }
                         }
                     }
                 }
