@@ -58,6 +58,7 @@ fun UnitDetailsScreen(
     val context = LocalContext.current
     val syncTrigger = FirebaseCloudSyncManager.globalCloudSyncTrigger.intValue
     var currentStatus by remember(unitStatus, syncTrigger) { mutableStateOf(unitStatus) }
+    var currentEventDate by remember { mutableStateOf("") }
 
     var showBreachContractDialog by remember { mutableStateOf(false) }
     var showDateRangePicker by remember { mutableStateOf(false) }
@@ -78,7 +79,7 @@ fun UnitDetailsScreen(
         if (initialCheckInDay == 11) currentRealDay else initialCheckInDay
     }
 
-    // Keep status updated automatically when tags or cloud sync changes
+    // Keep status and date coverage updated automatically when tags or cloud sync changes
     LaunchedEffect(syncTrigger, unitName, activeCheckIn, activeMonth, activeYear) {
         val dbHelper = AzureDatabaseHelper(context)
 
@@ -92,6 +93,7 @@ fun UnitDetailsScreen(
         }
 
         if (matchingEvent != null) {
+            currentEventDate = matchingEvent["date"] ?: ""
             val shape = matchingEvent["shape"] ?: ""
             val title = matchingEvent["title"] ?: ""
             val combined = "$shape $title"
@@ -103,6 +105,7 @@ fun UnitDetailsScreen(
                 else -> shape.ifBlank { "Available" }
             }
         } else {
+            currentEventDate = ""
             val match = dbHelper.getAllUnits().find {
                 val uNum = it["unitNumber"]?.toString() ?: ""
                 isSameUnit(uNum, unitName)
@@ -323,6 +326,76 @@ fun UnitDetailsScreen(
                             Text(text = "1 Bed", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = TextDark)
                         }
                     }
+                }
+            }
+        }
+
+        // Tag Date Coverage Info Card
+        val displayDateText = currentEventDate.ifBlank {
+            val shortM = activeMonth.take(3)
+            "$shortM $activeCheckIn, $activeYear"
+        }
+
+        Card(
+            shape = RoundedCornerShape(20.dp),
+            colors = CardDefaults.cardColors(containerColor = Color(0xFFF8F5FE)),
+            border = BorderStroke(1.dp, Color(0xFFE2D6F5)),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(14.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Surface(
+                        shape = CircleShape,
+                        color = Color(0xFFF3EDFD),
+                        modifier = Modifier.size(42.dp)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                imageVector = Icons.Default.DateRange,
+                                contentDescription = "Date Coverage",
+                                tint = PurplePrimary,
+                                modifier = Modifier.size(22.dp)
+                            )
+                        }
+                    }
+
+                    Column {
+                        Text(
+                            text = "Tag Date Coverage",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Medium,
+                            color = TextMuted
+                        )
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = displayDateText,
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = TextDark
+                        )
+                    }
+                }
+
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = PurplePrimary.copy(alpha = 0.12f)
+                ) {
+                    Text(
+                        text = if (currentEventDate.isNotBlank()) "Active Tag" else "Viewing Date",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = PurplePrimary,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                    )
                 }
             }
         }

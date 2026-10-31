@@ -211,7 +211,8 @@ private fun OwnerCalendarTabContent(
                 onSaveClick = { shape, color, unitName, dateText ->
                     val finalTargetDate = dateText.ifBlank { defaultTargetDate }
                     val colorLong = color.value.toLong()
-                    dbHelper.deleteEventByDateAndUnit(finalTargetDate, unitName)
+                    dbHelper.deleteEventsForUnit(unitName)
+                    FirebaseCloudSyncManager.deleteEventFromCloud("", unitName)
                     dbHelper.insertEvent(
                         title = "Staycation - $shape",
                         date = finalTargetDate,
@@ -266,14 +267,12 @@ private fun OwnerCalendarTabContent(
                     if (evtId != null) {
                         dbHelper.deleteEvent(evtId)
                     }
-                    val shortM = activeMonthName.take(3)
-                    val targetDate = "$shortM $selectedDayNumber, $activeYearNumber"
-                    dbHelper.deleteEventByDateAndUnit(targetDate, unitForDisplay)
-                    FirebaseCloudSyncManager.deleteEventFromCloud(targetDate, unitForDisplay)
+                    dbHelper.deleteEventsForUnit(unitForDisplay)
+                    FirebaseCloudSyncManager.deleteEventFromCloud("", unitForDisplay)
                     FirebaseCloudSyncManager.pushUnitStatusToCloud(unitForDisplay, "Available")
                     refreshTrigger++
                     currentSubScreen = "calendar"
-                    Toast.makeText(context, "Tag & booking deleted for $shortM $selectedDayNumber!", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, "Tag & booking deleted for $unitForDisplay!", Toast.LENGTH_SHORT).show()
                 }
             )
         }
@@ -953,7 +952,8 @@ private fun OwnerUnitsTabContent(onTabSelected: (Int) -> Unit) {
             onSaveClick = { shape, color, unitName, dateText ->
                 val finalTargetDate = dateText.ifBlank { defaultRangeStr }
                 val colorLong = color.value.toLong()
-                dbHelper.deleteEventByDateAndUnit(finalTargetDate, unitName)
+                dbHelper.deleteEventsForUnit(unitName)
+                FirebaseCloudSyncManager.deleteEventFromCloud("", unitName)
                 dbHelper.insertEvent(
                     title = "Staycation - $shape",
                     date = finalTargetDate,
@@ -1000,7 +1000,10 @@ private fun OwnerUnitsTabContent(onTabSelected: (Int) -> Unit) {
             onViewUnitDetailsClick = { currentSubScreen = "details" },
             onEditTagClick = { currentSubScreen = "choose_category" },
             onDeleteBookingClick = {
-                dbHelper.deleteEventByDateAndUnit(defaultRangeStr, selectedUnitName)
+                dbHelper.deleteEventsForUnit(selectedUnitName)
+                FirebaseCloudSyncManager.deleteEventFromCloud("", selectedUnitName)
+                FirebaseCloudSyncManager.pushUnitStatusToCloud(selectedUnitName, "Available")
+                refreshTrigger++
                 Toast.makeText(context, "Tag & booking deleted for $selectedUnitName!", Toast.LENGTH_SHORT).show()
                 currentSubScreen = "directory"
             }
