@@ -147,10 +147,6 @@ object FirebaseCloudSyncManager {
         try {
             if (dateStr.isBlank()) return false
             val realTimeCal = java.util.Calendar.getInstance()
-            val currentYear = realTimeCal.get(java.util.Calendar.YEAR)
-            val currentMonthIdx = realTimeCal.get(java.util.Calendar.MONTH) + 1
-            val currentDay = realTimeCal.get(java.util.Calendar.DAY_OF_MONTH)
-            val currentHour24 = realTimeCal.get(java.util.Calendar.HOUR_OF_DAY)
 
             val monthMap = mapOf(
                 "jan" to 1, "feb" to 2, "mar" to 3, "apr" to 4, "may" to 5, "jun" to 6,
@@ -159,11 +155,27 @@ object FirebaseCloudSyncManager {
                 "july" to 7, "august" to 8, "september" to 9, "october" to 10, "november" to 11, "december" to 12
             )
 
-            val yearFound = Regex("\\b20\\d{2}\\b").find(dateStr)?.value?.toIntOrNull() ?: currentYear
-            val monthFound = monthMap.entries.find { dateStr.contains(it.key, ignoreCase = true) }?.value ?: currentMonthIdx
+            val isRange = dateStr.contains("-") || dateStr.contains("to", ignoreCase = true)
+            val checkOutPart = if (isRange) {
+                val parts = dateStr.split("-", "to", ignoreCase = true)
+                parts.getOrNull(1)?.trim() ?: dateStr
+            } else {
+                dateStr
+            }
 
-            val daysInDate = Regex("\\b([1-9]|[12][0-9]|3[01])\\b").findAll(dateStr).mapNotNull { it.value.toIntOrNull() }.toList()
-            val checkOutDay = if (daysInDate.size >= 2) daysInDate[1] else if (daysInDate.isNotEmpty()) daysInDate[0] else currentDay
+            val yearFound = Regex("\\b20\\d{2}\\b").find(checkOutPart)?.value?.toIntOrNull()
+                ?: Regex("\\b20\\d{2}\\b").find(dateStr)?.value?.toIntOrNull()
+                ?: realTimeCal.get(java.util.Calendar.YEAR)
+
+            val monthFound = monthMap.entries.find { checkOutPart.contains(it.key, ignoreCase = true) }?.value
+                ?: monthMap.entries.find { dateStr.contains(it.key, ignoreCase = true) }?.value
+                ?: (realTimeCal.get(java.util.Calendar.MONTH) + 1)
+
+            val daysInDate = Regex("\\b([1-9]|[12][0-9]|3[01])\\b").findAll(checkOutPart).mapNotNull { it.value.toIntOrNull() }.toList()
+            val checkOutDay = if (daysInDate.isNotEmpty()) daysInDate[0] else {
+                val allDays = Regex("\\b([1-9]|[12][0-9]|3[01])\\b").findAll(dateStr).mapNotNull { it.value.toIntOrNull() }.toList()
+                allDays.lastOrNull() ?: realTimeCal.get(java.util.Calendar.DAY_OF_MONTH)
+            }
 
             val isPM = timeStr.contains("PM", ignoreCase = true)
             val rawHour = Regex("\\d+").find(timeStr)?.value?.toIntOrNull() ?: 12
@@ -173,16 +185,16 @@ object FirebaseCloudSyncManager {
                 else -> rawHour
             }
 
-            if (currentYear < yearFound) return false
-            if (currentYear > yearFound) return true
+            val checkOutCal = java.util.Calendar.getInstance().apply {
+                clear()
+                set(java.util.Calendar.YEAR, yearFound)
+                set(java.util.Calendar.MONTH, monthFound - 1)
+                set(java.util.Calendar.DAY_OF_MONTH, checkOutDay)
+                set(java.util.Calendar.HOUR_OF_DAY, checkOutHour24)
+                set(java.util.Calendar.MINUTE, 0)
+            }
 
-            if (currentMonthIdx < monthFound) return false
-            if (currentMonthIdx > monthFound) return true
-
-            if (currentDay < checkOutDay) return false
-            if (currentDay > checkOutDay) return true
-
-            return currentHour24 > checkOutHour24
+            return realTimeCal.after(checkOutCal)
         } catch (_: Exception) {
             return false
         }

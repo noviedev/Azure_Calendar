@@ -531,6 +531,76 @@ class AzureDatabaseHelper(context: Context) : SQLiteOpenHelper(context.applicati
     }
 
     fun autoReleaseExpiredUnits() {
-        // Safe query helper -- read-only queries should never delete database records automatically.
+        try {
+            val db = this.writableDatabase
+            val cursor = db.rawQuery("SELECT $COLUMN_ID, $COLUMN_DATE, $COLUMN_TIME, $COLUMN_UNIT, $COLUMN_SHAPE FROM $TABLE_EVENTS", null)
+            val expiredEvents = mutableListOf<Map<String, String>>()
+
+            if (cursor.moveToFirst()) {
+                do {
+                    val id = cursor.getLong(cursor.getColumnIndexOrThrow(COLUMN_ID)).toString()
+                    val dateStr = cursor.getString(cursor.getColumnIndexOrThrow(COLUMN_DATE)) ?: ""
+                    val timeStr = cursor.getString(cursor.getColumnIndexOrThrow(COLUMN_TIME)) ?: "12:00 PM"
+                    val unitStr = cursor.getString(cursor.getColumnIndexOrThrow(COLUMN_UNIT)) ?: ""
+                    val shapeStr = cursor.getString(cursor.getColumnIndexOrThrow(COLUMN_SHAPE)) ?: ""
+
+                    if (unitStr.isNotBlank() && dateStr.isNotBlank()) {
+                        if (FirebaseCloudSyncManager.isEventDateExpired(dateStr, timeStr)) {
+                            expiredEvents.add(
+                                mapOf(
+                                    "id" to id,
+                                    "date" to dateStr,
+                                    "unit" to unitStr,
+                                    "shape" to shapeStr
+                                )
+                            )
+                        }
+                    }
+                } while (cursor.moveToNext())
+            }
+            cursor.close()
+
+            if (expiredEvents.isNotEmpty()) {
+                for (evt in expiredEvents) {
+                    val idVal = evt["id"]?.toLongOrNull()
+                    val unitName = evt["unit"] ?: ""
+                    val dateStr = evt["date"] ?: ""
+
+                    if (idVal != null) {
+                        db.delete(TABLE_EVENTS, "$COLUMN_ID = ?", arrayOf(idVal.toString()))
+                    }
+
+                    if (unitName.isNotBlank()) {
+                        val cleanNum = unitName.replace("Unit", "", ignoreCase = true).trim()
+                        val normalizedUnit = "Unit $cleanNum"
+
+                        val checkCursor = db.rawQuery("SELECT $COLUMN_DATE, $COLUMN_TIME FROM $TABLE_EVENTS WHERE $COLUMN_UNIT LIKE ? OR $COLUMN_UNIT = ?", arrayOf("%$cleanNum%", normalizedUnit))
+                        var hasRemainingActiveEvent = false
+                        if (checkCursor.moveToFirst()) {
+                            do {
+                                val remainingDate = checkCursor.getString(0) ?: ""
+                                val remainingTime = checkCursor.getString(1) ?: "12:00 PM"
+                                if (remainingDate.isNotBlank() && !FirebaseCloudSyncManager.isEventDateExpired(remainingDate, remainingTime)) {
+                                    hasRemainingActiveEvent = true
+                                    break
+                                }
+                            } while (checkCursor.moveToNext())
+                        }
+                        checkCursor.close()
+
+                        if (!hasRemainingActiveEvent) {
+                            updateUnitStatus(normalizedUnit, "Available", syncToCloud = false)
+                            updateUnitStatus(cleanNum, "Available", syncToCloud = false)
+                            FirebaseCloudSyncManager.pushUnitStatusToCloud(normalizedUnit, "Available")
+                        }
+
+                        FirebaseCloudSyncManager.deleteEventFromCloud(dateStr, normalizedUnit)
+                    }
+                }
+                FirebaseCloudSyncManager.notifyCloudUpdate()
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("AzureDB", "Error in autoReleaseExpiredUnits: ${e.message}")
+        }
     }
 }

@@ -52,7 +52,8 @@ fun UnitDetailsScreen(
     isOwnerMode: Boolean = false,
     onBackClick: () -> Unit = {},
     onEditUnitClick: () -> Unit = {},
-    onBookNowClick: () -> Unit = {},
+    onEditTagClick: (dateRangeText: String) -> Unit = {},
+    onBookNowClick: (dateRangeText: String) -> Unit = {},
     @Suppress("UNUSED_PARAMETER") onTabSelected: (Int) -> Unit = {}
 ) {
     val context = LocalContext.current
@@ -330,72 +331,126 @@ fun UnitDetailsScreen(
             }
         }
 
-        // Tag Date Coverage Info Card
-        val displayDateText = currentEventDate.ifBlank {
-            val shortM = activeMonth.take(3)
-            "$shortM $activeCheckIn, $activeYear"
+        // Tag Date Coverage Info Card (Displays explicit Check-in Date and Check-out Date)
+        val (inDateStr, outDateStr) = remember(currentEventDate, activeCheckIn, activeMonth, activeYear) {
+            if (currentEventDate.isNotBlank() && (currentEventDate.contains("-") || currentEventDate.contains("to", ignoreCase = true))) {
+                val parts = currentEventDate.split("-", "to", ignoreCase = true)
+                val p1 = parts[0].trim()
+                val p2 = parts.getOrNull(1)?.trim() ?: p1
+                val yr = Regex("\\b20\\d{2}\\b").find(currentEventDate)?.value ?: activeYear.toString()
+                val p1Full = if (p1.contains(yr)) p1 else "$p1, $yr"
+                val p2Full = if (p2.contains(yr)) p2 else "$p2, $yr"
+                Pair(p1Full, p2Full)
+            } else if (currentEventDate.isNotBlank()) {
+                Pair(currentEventDate, currentEventDate)
+            } else {
+                val shortM = activeMonth.take(3)
+                val cIn = "$shortM $activeCheckIn, $activeYear"
+                val nextDayCal = java.util.Calendar.getInstance().apply {
+                    clear()
+                    val monthNamesList = listOf("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sept", "Oct", "Nov", "Dec")
+                    val mIdx = monthNamesList.indexOf(shortM).let { if (it != -1) it else 9 }
+                    set(activeYear, mIdx, activeCheckIn)
+                    add(java.util.Calendar.DAY_OF_MONTH, 1)
+                }
+                val monthNamesList = listOf("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sept", "Oct", "Nov", "Dec")
+                val outM = monthNamesList[nextDayCal.get(java.util.Calendar.MONTH)]
+                val outD = nextDayCal.get(java.util.Calendar.DAY_OF_MONTH)
+                val outY = nextDayCal.get(java.util.Calendar.YEAR)
+                Pair(cIn, "$outM $outD, $outY")
+            }
         }
+
+        val fullCoverageRange = if (inDateStr == outDateStr) inDateStr else "$inDateStr - $outDateStr"
 
         Card(
             shape = RoundedCornerShape(20.dp),
             colors = CardDefaults.cardColors(containerColor = Color(0xFFF8F5FE)),
             border = BorderStroke(1.dp, Color(0xFFE2D6F5)),
-            modifier = Modifier.fillMaxWidth()
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(20.dp))
+                .clickable { onEditTagClick(fullCoverageRange) }
         ) {
-            Row(
+            Column(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(14.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
+                verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
+                Text(
+                    text = "Tag Date Coverage",
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = TextMuted
+                )
+
                 Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
+                    // Check-in Date Box
                     Surface(
-                        shape = CircleShape,
+                        shape = RoundedCornerShape(12.dp),
                         color = Color(0xFFF3EDFD),
-                        modifier = Modifier.size(42.dp)
+                        modifier = Modifier.weight(1f)
                     ) {
-                        Box(contentAlignment = Alignment.Center) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
                             Icon(
                                 imageVector = Icons.Default.DateRange,
-                                contentDescription = "Date Coverage",
+                                contentDescription = "Check-in",
                                 tint = PurplePrimary,
-                                modifier = Modifier.size(22.dp)
+                                modifier = Modifier.size(18.dp)
                             )
+                            Column {
+                                Text(text = "Check-in Date", fontSize = 10.sp, color = TextMuted)
+                                Text(
+                                    text = inDateStr,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = TextDark
+                                )
+                            }
                         }
                     }
 
-                    Column {
-                        Text(
-                            text = "Tag Date Coverage",
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Medium,
-                            color = TextMuted
-                        )
-                        Spacer(modifier = Modifier.height(2.dp))
-                        Text(
-                            text = displayDateText,
-                            fontSize = 14.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = TextDark
-                        )
-                    }
-                }
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(text = "➞", fontSize = 16.sp, color = PurplePrimary, fontWeight = FontWeight.Bold)
+                    Spacer(modifier = Modifier.width(6.dp))
 
-                Surface(
-                    shape = RoundedCornerShape(12.dp),
-                    color = PurplePrimary.copy(alpha = 0.12f)
-                ) {
-                    Text(
-                        text = if (currentEventDate.isNotBlank()) "Active Tag" else "Viewing Date",
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = PurplePrimary,
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
-                    )
+                    // Check-out Date Box
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = Color(0xFFF3EDFD),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.DateRange,
+                                contentDescription = "Check-out",
+                                tint = PurplePrimary,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Column {
+                                Text(text = "Check-out Date", fontSize = 10.sp, color = TextMuted)
+                                Text(
+                                    text = outDateStr,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = TextDark
+                                )
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -447,7 +502,7 @@ fun UnitDetailsScreen(
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 OutlinedButton(
-                    onClick = onBookNowClick,
+                    onClick = { onEditTagClick(fullCoverageRange) },
                     shape = RoundedCornerShape(16.dp),
                     border = BorderStroke(1.5.dp, PurplePrimary),
                     colors = ButtonDefaults.outlinedButtonColors(contentColor = PurplePrimary),
@@ -461,7 +516,7 @@ fun UnitDetailsScreen(
                 }
 
                 Button(
-                    onClick = onBookNowClick,
+                    onClick = { onBookNowClick(fullCoverageRange) },
                     shape = RoundedCornerShape(16.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = PurplePrimary),
                     modifier = Modifier

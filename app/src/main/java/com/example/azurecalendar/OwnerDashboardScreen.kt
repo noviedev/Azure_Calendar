@@ -899,8 +899,11 @@ private fun OwnerUnitsTabContent(onTabSelected: (Int) -> Unit) {
     var activeYearNumber by remember { mutableIntStateOf(currentRealYear) }
     var refreshTrigger by remember { mutableIntStateOf(0) }
 
+    var activeTagDateRange by remember { mutableStateOf("") }
+
     val shortM = activeMonthName.take(3)
     val defaultRangeStr = "$shortM $selectedDayNum - $shortM ${(selectedDayNum + 2).coerceAtMost(30)}, $activeYearNumber"
+    val targetCategoryDateText = if (activeTagDateRange.isNotBlank()) activeTagDateRange else defaultRangeStr
 
     when (currentSubScreen) {
         "directory" -> UnitsDirectoryScreen(
@@ -912,6 +915,7 @@ private fun OwnerUnitsTabContent(onTabSelected: (Int) -> Unit) {
                 selectedBrType = description
                 selectedStatus = status
                 selectedImageUri = imageUri
+                activeTagDateRange = ""
                 currentSubScreen = "details"
             },
             onEditUnitClick = { unitNumber, tower, description, status, imageUri ->
@@ -920,6 +924,7 @@ private fun OwnerUnitsTabContent(onTabSelected: (Int) -> Unit) {
                 selectedBrType = description
                 selectedStatus = status
                 selectedImageUri = imageUri
+                activeTagDateRange = ""
                 currentSubScreen = "edit_unit"
             },
             isOwnerMode = true
@@ -940,13 +945,22 @@ private fun OwnerUnitsTabContent(onTabSelected: (Int) -> Unit) {
             unitStatus = selectedStatus,
             imageUri = selectedImageUri,
             initialCheckInDay = selectedDayNum,
+            initialMonthName = activeMonthName,
+            initialYearNumber = activeYearNumber,
             onBackClick = { currentSubScreen = "directory" },
             onEditUnitClick = { currentSubScreen = "edit_unit" },
-            onBookNowClick = { currentSubScreen = "choose_category" },
+            onEditTagClick = { range ->
+                activeTagDateRange = range
+                currentSubScreen = "choose_category"
+            },
+            onBookNowClick = { range ->
+                activeTagDateRange = range
+                currentSubScreen = "choose_category"
+            },
             onTabSelected = onTabSelected
         )
         "choose_category" -> ChooseCategoryScreen(
-            selectedDateText = defaultRangeStr,
+            selectedDateText = targetCategoryDateText,
             initialUnitName = selectedUnitName,
             onBackClick = { currentSubScreen = "details" },
             onSaveClick = { shape, color, unitName, dateText ->

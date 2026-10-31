@@ -2198,8 +2198,11 @@ private fun UnitsTabContent(
     var selectedImageUri by remember { mutableStateOf("") }
     var selectedStatus by remember { mutableStateOf("Available") }
 
+    var activeTagDateRange by remember { mutableStateOf("") }
+
     val shortM = activeMonthName.take(3)
     val defaultRangeStr = "$shortM $selectedDayNum - $shortM ${(selectedDayNum + 2).coerceAtMost(30)}, $activeYearNumber"
+    val targetCategoryDateText = if (activeTagDateRange.isNotBlank()) activeTagDateRange else defaultRangeStr
 
     when (currentSubScreen) {
         "directory" -> UnitsDirectoryScreen(
@@ -2210,6 +2213,7 @@ private fun UnitsTabContent(
                 selectedUnitName = unitNumber
                 selectedStatus = status
                 selectedImageUri = imageUri
+                activeTagDateRange = ""
                 currentSubScreen = "details"
             }
         )
@@ -2218,13 +2222,22 @@ private fun UnitsTabContent(
             unitStatus = selectedStatus,
             imageUri = selectedImageUri,
             initialCheckInDay = selectedDayNum,
+            initialMonthName = activeMonthName,
+            initialYearNumber = activeYearNumber,
             onBackClick = { currentSubScreen = "directory" },
             onEditUnitClick = { currentSubScreen = "choose_category" },
-            onBookNowClick = { currentSubScreen = "choose_category" },
+            onEditTagClick = { range ->
+                activeTagDateRange = range
+                currentSubScreen = "choose_category"
+            },
+            onBookNowClick = { range ->
+                activeTagDateRange = range
+                currentSubScreen = "choose_category"
+            },
             onTabSelected = onTabSelected
         )
         "choose_category" -> ChooseCategoryScreen(
-            selectedDateText = defaultRangeStr,
+            selectedDateText = targetCategoryDateText,
             initialUnitName = selectedUnitName,
             onBackClick = { currentSubScreen = "details" },
             onSaveClick = { shape, color, unitName, dateText ->
