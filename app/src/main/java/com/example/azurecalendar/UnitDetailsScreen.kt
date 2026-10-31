@@ -59,19 +59,6 @@ fun UnitDetailsScreen(
     val syncTrigger = FirebaseCloudSyncManager.globalCloudSyncTrigger.intValue
     var currentStatus by remember(unitStatus, syncTrigger) { mutableStateOf(unitStatus) }
 
-    // Keep status updated if cloud changes it while looking at details
-    LaunchedEffect(syncTrigger, unitName) {
-        val dbHelper = AzureDatabaseHelper(context)
-        val cleanTarget = unitName.replace("Unit", "", ignoreCase = true).trim()
-        val match = dbHelper.getAllUnits().find {
-            val uNum = it["unitNumber"]?.toString() ?: ""
-            uNum.replace("Unit", "", ignoreCase = true).trim().equals(cleanTarget, ignoreCase = true)
-        }
-        if (match != null) {
-            currentStatus = match["status"]?.toString() ?: currentStatus
-        }
-    }
-
     var showBreachContractDialog by remember { mutableStateOf(false) }
     var showDateRangePicker by remember { mutableStateOf(false) }
     var showExtendStayDialog by remember { mutableStateOf(false) }
@@ -89,6 +76,42 @@ fun UnitDetailsScreen(
     }
     val activeCheckIn = remember(initialCheckInDay) {
         if (initialCheckInDay == 11) currentRealDay else initialCheckInDay
+    }
+
+    // Keep status updated automatically when tags or cloud sync changes
+    LaunchedEffect(syncTrigger, unitName, activeCheckIn, activeMonth, activeYear) {
+        val dbHelper = AzureDatabaseHelper(context)
+
+        val allEvents = dbHelper.getAllEvents()
+        val matchingEvent = allEvents.find { evt ->
+            val evtDate = evt["date"] ?: ""
+            val evtUnit = evt["unit"] ?: ""
+            val unitMatches = isSameUnit(evtUnit, unitName)
+            val dateMatches = isDateCoveredByEvent(evtDate, activeCheckIn, activeMonth)
+            unitMatches && dateMatches
+        }
+
+        if (matchingEvent != null) {
+            val shape = matchingEvent["shape"] ?: ""
+            val title = matchingEvent["title"] ?: ""
+            val combined = "$shape $title"
+            currentStatus = when {
+                combined.contains("Check", ignoreCase = true) || combined.contains("Heart", ignoreCase = true) -> "Check-in"
+                combined.contains("Reserve", ignoreCase = true) || combined.contains("Diamond", ignoreCase = true) -> "Reserved"
+                combined.contains("Maintenance", ignoreCase = true) || combined.contains("Circle", ignoreCase = true) -> "Under Maintenance"
+                combined.contains("Not", ignoreCase = true) || combined.contains("Star", ignoreCase = true) -> "Not Available"
+                else -> shape.ifBlank { "Available" }
+            }
+        } else {
+            val match = dbHelper.getAllUnits().find {
+                val uNum = it["unitNumber"]?.toString() ?: ""
+                isSameUnit(uNum, unitName)
+            }
+            if (match != null) {
+                val raw = match["status"]?.toString() ?: "Available"
+                currentStatus = raw.ifBlank { "Available" }
+            }
+        }
     }
 
     val maxDaysInActiveMonth = remember(activeMonth, activeYear) {
