@@ -567,10 +567,11 @@ fun NotificationsCenterScreen(
     }
 
     var showDatePickerDialog by remember { mutableStateOf(false) }
-    var selectedMonth by remember { mutableStateOf("Sept") }
-    var selectedDay by remember { mutableStateOf(15) }
-    var selectedYear by remember { mutableStateOf(2026) }
+    val realTimeCal = remember { java.util.Calendar.getInstance() }
     val monthsList = listOf("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sept", "Oct", "Nov", "Dec")
+    var selectedMonth by remember { mutableStateOf(monthsList.getOrElse(realTimeCal.get(java.util.Calendar.MONTH)) { "Oct" }) }
+    var selectedDay by remember { mutableIntStateOf(realTimeCal.get(java.util.Calendar.DAY_OF_MONTH)) }
+    var selectedYear by remember { mutableIntStateOf(realTimeCal.get(java.util.Calendar.YEAR)) }
 
     if (showDatePickerDialog) {
         AlertDialog(
@@ -599,6 +600,17 @@ fun NotificationsCenterScreen(
                         }
                     }
 
+                    val maxDaysForMonth = remember(selectedMonth, selectedYear) {
+                        val mIdx = monthsList.indexOf(selectedMonth)
+                        val cal = java.util.Calendar.getInstance().apply {
+                            clear()
+                            set(java.util.Calendar.YEAR, selectedYear)
+                            set(java.util.Calendar.MONTH, if (mIdx != -1) mIdx else 9)
+                            set(java.util.Calendar.DAY_OF_MONTH, 1)
+                        }
+                        cal.getActualMaximum(java.util.Calendar.DAY_OF_MONTH)
+                    }
+
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
@@ -610,7 +622,7 @@ fun NotificationsCenterScreen(
                                 Icon(Icons.AutoMirrored.Filled.KeyboardArrowLeft, contentDescription = null, tint = PurplePrimary)
                             }
                             Text("$selectedDay", fontWeight = FontWeight.Bold, fontSize = 16.sp, color = PurplePrimary)
-                            IconButton(onClick = { if (selectedDay < 31) selectedDay++ }) {
+                            IconButton(onClick = { if (selectedDay < maxDaysForMonth) selectedDay++ }) {
                                 Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null, tint = PurplePrimary)
                             }
                         }
@@ -623,7 +635,8 @@ fun NotificationsCenterScreen(
                     ) {
                         Text("Year:", fontWeight = FontWeight.Bold, fontSize = 14.sp)
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            listOf(2026, 2027, 2028).forEach { y ->
+                            val currentYear = java.util.Calendar.getInstance().get(java.util.Calendar.YEAR)
+                            listOf(currentYear, currentYear + 1, currentYear + 2).forEach { y ->
                                 FilterChip(
                                     selected = selectedYear == y,
                                     onClick = { selectedYear = y },

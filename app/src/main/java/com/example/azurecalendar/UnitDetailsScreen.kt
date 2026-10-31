@@ -91,8 +91,20 @@ fun UnitDetailsScreen(
         if (initialCheckInDay == 11) currentRealDay else initialCheckInDay
     }
 
+    val maxDaysInActiveMonth = remember(activeMonth, activeYear) {
+        val monthsList = listOf("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec")
+        val monthIdx = monthsList.indexOfFirst { activeMonth.contains(it, ignoreCase = true) }.let { if (it != -1) it else 9 }
+        val cal = java.util.Calendar.getInstance().apply {
+            clear()
+            set(java.util.Calendar.YEAR, activeYear)
+            set(java.util.Calendar.MONTH, monthIdx)
+            set(java.util.Calendar.DAY_OF_MONTH, 1)
+        }
+        cal.getActualMaximum(java.util.Calendar.DAY_OF_MONTH)
+    }
+
     var checkInDay by remember(activeCheckIn) { mutableIntStateOf(activeCheckIn) }
-    var checkOutDay by remember(activeCheckIn) { mutableIntStateOf((activeCheckIn + 2).coerceAtMost(30)) }
+    var checkOutDay by remember(activeCheckIn, maxDaysInActiveMonth) { mutableIntStateOf((activeCheckIn + 2).coerceAtMost(maxDaysInActiveMonth)) }
     var monthName by remember(activeMonth) { mutableStateOf(activeMonth) }
     var yearNumber by remember(activeYear) { mutableIntStateOf(activeYear) }
 
@@ -628,7 +640,7 @@ fun UnitDetailsScreen(
                                 Icon(Icons.AutoMirrored.Filled.KeyboardArrowLeft, contentDescription = "Prev", tint = PurplePrimary)
                             }
                             Text("$shortM $checkOutDay, $yearNumber", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = PurplePrimary)
-                            IconButton(onClick = { if (checkOutDay < 30) checkOutDay++ }) {
+                            IconButton(onClick = { if (checkOutDay < maxDaysInActiveMonth) checkOutDay++ }) {
                                 Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = "Next", tint = PurplePrimary)
                             }
                         }

@@ -39,7 +39,7 @@ dependencies {
     implementation(platform("com.google.firebase:firebase-bom:33.1.0"))
     implementation("com.google.firebase:firebase-auth-ktx")
     implementation("com.google.firebase:firebase-firestore-ktx")
-
+    implementation("com.google.firebase:firebase-storage-ktx")
     implementation("androidx.credentials:credentials:1.3.0")
     implementation("androidx.credentials:credentials-play-services-auth:1.3.0")
     implementation("com.google.android.libraries.identity.googleid:googleid:1.1.1")
@@ -47,8 +47,6 @@ dependencies {
     // Add this line to import OkHttp for WebSockets
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
 
-    // Facebook SDK
-    implementation("com.facebook.android:facebook-login:latest.release")
     implementation("androidx.core:core-splashscreen:1.0.1")
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.activity.compose)

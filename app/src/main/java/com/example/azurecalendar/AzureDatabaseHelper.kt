@@ -4,8 +4,16 @@ import android.content.ContentValues
 import android.content.Context
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.net.Uri
+import java.io.File
+import java.io.FileOutputStream
 
-class AzureDatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME, null, DATABASE_VERSION) {
+class AzureDatabaseHelper(context: Context) : SQLiteOpenHelper(context.applicationContext, DATABASE_NAME, null, DATABASE_VERSION) {
+
+    // Hold applicationContext so image files can be read, cached, and synced to Firestore
+    private val appContext: Context = context.applicationContext
 
     companion object {
         private const val DATABASE_NAME = "azure_calendar.db"
@@ -101,6 +109,35 @@ class AzureDatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE
         db.execSQL("DROP TABLE IF EXISTS $TABLE_UNITS")
         db.execSQL("DROP TABLE IF EXISTS $TABLE_AGENTS")
         onCreate(db)
+    }
+
+    /**
+     * Copies a temporary gallery content:// URI into permanent app storage on the Owner's phone
+     * so the photo never expires and can always be synced to the cloud.
+     */
+    private fun persistLocalImageIfNeeded(cleanUnit: String, rawUri: String): String {
+        if (rawUri.isBlank()) return ""
+        if (!rawUri.startsWith("content://", ignoreCase = true)) return rawUri
+
+        return try {
+            val inputStream = appContext.contentResolver.openInputStream(Uri.parse(rawUri)) ?: return rawUri
+            val bitmap = BitmapFactory.decodeStream(inputStream)
+            inputStream.close()
+            if (bitmap == null) return rawUri
+
+            val dir = File(appContext.filesDir, "synced_unit_images")
+            if (!dir.exists()) dir.mkdirs()
+
+            val safeUnit = cleanUnit.replace(Regex("[^a-zA-Z0-9_\\-.]"), "")
+            val outFile = File(dir, "owner_unit_${safeUnit}_${System.currentTimeMillis()}.jpg")
+            FileOutputStream(outFile).use { fos ->
+                bitmap.compress(Bitmap.CompressFormat.JPEG, 80, fos)
+                fos.flush()
+            }
+            Uri.fromFile(outFile).toString()
+        } catch (_: Exception) {
+            rawUri
+        }
     }
 
     // --- Agents CRUD ---
@@ -369,6 +406,20 @@ class AzureDatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE
         val cleanUnit = unitNumber.replace("Unit", "", ignoreCase = true).trim()
         val normalizedUnit = "Unit $cleanUnit"
 
+        // Preserve existing local image if incoming imageUri is empty
+        var existingImageUri = ""
+        val cursor = db.rawQuery(
+            "SELECT $COLUMN_IMAGE FROM $TABLE_UNITS WHERE $COLUMN_UNIT_NUMBER = ? OR $COLUMN_UNIT_NUMBER = ? OR $COLUMN_UNIT_NUMBER = ?",
+            arrayOf(normalizedUnit, unitNumber, cleanUnit)
+        )
+        if (cursor.moveToFirst()) {
+            existingImageUri = cursor.getString(0) ?: ""
+        }
+        cursor.close()
+
+        val rawFinalImage = imageUri.ifBlank { existingImageUri }
+        val finalImageUri = persistLocalImageIfNeeded(cleanUnit, rawFinalImage)
+
         db.delete(
             TABLE_UNITS,
             "$COLUMN_UNIT_NUMBER = ? OR $COLUMN_UNIT_NUMBER = ? OR $COLUMN_UNIT_NUMBER = ?",
@@ -381,11 +432,12 @@ class AzureDatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE
             put(COLUMN_STATUS, status)
             put(COLUMN_OWNER, owner)
             put(COLUMN_RATE, rate)
-            put(COLUMN_IMAGE, imageUri)
+            put(COLUMN_IMAGE, finalImageUri)
             put(COLUMN_DESCRIPTION, description)
         }
         val rowId = db.insertWithOnConflict(TABLE_UNITS, null, values, SQLiteDatabase.CONFLICT_REPLACE)
 
+        // Pass appContext so FirebaseCloudSyncManager can convert the local photo to Base64 and push to Firestore!
         if (syncToCloud && cleanUnit.isNotBlank() && cleanUnit != "TEMP_UNIT") {
             FirebaseCloudSyncManager.pushFullUnitToCloud(
                 unitNumber = normalizedUnit,
@@ -394,7 +446,8 @@ class AzureDatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE
                 status = status,
                 owner = owner,
                 rate = rate,
-                imageUri = imageUri
+                imageUri = finalImageUri,
+                context = appContext
             )
         }
         return rowId

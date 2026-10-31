@@ -8,6 +8,8 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -62,19 +64,36 @@ fun ChooseCategoryScreen(
         if (foundIdx != -1) foundIdx else 0
     }
 
-    val initialDays = remember(selectedDateText) {
-        val numbers = Regex("\\b([1-9]|[12][0-9]|3[01])\\b").findAll(selectedDateText).mapNotNull { it.value.toIntOrNull() }.toList()
-        if (numbers.size >= 2) {
-            Pair(numbers[0], numbers[1])
-        } else if (numbers.isNotEmpty()) {
-            Pair(numbers[0], if (numbers[0] < 31) numbers[0] + 1 else 1)
-        } else {
-            Pair(1, 2)
-        }
+    val realTimeCal = remember { java.util.Calendar.getInstance() }
+    val monthNamesList = listOf("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sept", "Oct", "Nov", "Dec")
+    val currentRealMonthShort = monthNamesList.getOrElse(realTimeCal.get(java.util.Calendar.MONTH)) { "Oct" }
+    val currentRealYear = realTimeCal.get(java.util.Calendar.YEAR)
+    val currentRealDay = realTimeCal.get(java.util.Calendar.DAY_OF_MONTH)
+
+    val initialDateData = remember(selectedDateText) {
+        val foundMonths = monthNamesList.filter { selectedDateText.contains(it, ignoreCase = true) }
+        val foundYears = Regex("\\b20\\d{2}\\b").findAll(selectedDateText).mapNotNull { it.value.toIntOrNull() }.toList()
+        val foundNumbers = Regex("\\b([1-9]|[12][0-9]|3[01])\\b").findAll(selectedDateText).mapNotNull { it.value.toIntOrNull() }.toList()
+
+        val inM = foundMonths.getOrNull(0) ?: currentRealMonthShort
+        val outM = if (foundMonths.size >= 2) foundMonths[1] else inM
+
+        val inY = foundYears.getOrNull(0) ?: currentRealYear
+        val outY = if (foundYears.size >= 2) foundYears[1] else inY
+
+        val inD = foundNumbers.getOrNull(0) ?: currentRealDay
+        val outD = if (foundNumbers.size >= 2) foundNumbers[1] else (inD + 2).coerceAtMost(30)
+
+        listOf(inM, inD.toString(), inY.toString(), outM, outD.toString(), outY.toString())
     }
 
-    var checkInDay by remember { mutableIntStateOf(initialDays.first) }
-    var checkOutDay by remember { mutableIntStateOf(initialDays.second) }
+    var checkInMonth by remember(selectedDateText) { mutableStateOf(initialDateData[0]) }
+    var checkInDay by remember(selectedDateText) { mutableIntStateOf(initialDateData[1].toInt()) }
+    var checkInYear by remember(selectedDateText) { mutableIntStateOf(initialDateData[2].toInt()) }
+
+    var checkOutMonth by remember(selectedDateText) { mutableStateOf(initialDateData[3]) }
+    var checkOutDay by remember(selectedDateText) { mutableIntStateOf(initialDateData[4].toInt()) }
+    var checkOutYear by remember(selectedDateText) { mutableIntStateOf(initialDateData[5].toInt()) }
 
     var checkInTime by remember { mutableStateOf("2:00 PM") }
     var checkOutTime by remember { mutableStateOf("12:00 PM") }
@@ -101,42 +120,43 @@ fun ChooseCategoryScreen(
         ShapeOption("Star", "Not Available", R.drawable.star, Color(0xFFE53935), Color(0xFFFFEBEE))
     )
 
-    val realTimeCal = remember { java.util.Calendar.getInstance() }
-    val monthNamesList = listOf("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sept", "Oct", "Nov", "Dec")
-    val currentRealMonthShort = monthNamesList.getOrElse(realTimeCal.get(java.util.Calendar.MONTH)) { "Oct" }
-    val currentRealYear = realTimeCal.get(java.util.Calendar.YEAR)
-
-    var activeMonthShort by remember(selectedDateText) {
-        val foundM = monthNamesList.find { selectedDateText.contains(it, ignoreCase = true) }
-        mutableStateOf(foundM ?: currentRealMonthShort)
-    }
-
-    var activeYear by remember(selectedDateText) {
-        val foundY = Regex("\\b20\\d{2}\\b").find(selectedDateText)?.value?.toIntOrNull()
-        mutableIntStateOf(foundY ?: currentRealYear)
-    }
-
-    val fullMonthName = remember(activeMonthShort) {
-        when (activeMonthShort.lowercase()) {
-            "jan" -> "January"
-            "feb" -> "February"
-            "mar" -> "March"
-            "apr" -> "April"
-            "may" -> "May"
-            "jun" -> "June"
-            "jul" -> "July"
-            "aug" -> "August"
-            "sept", "sep" -> "September"
-            "oct" -> "October"
-            "nov" -> "November"
-            "dec" -> "December"
-            else -> activeMonthShort
+    val currentFormattedDate = remember(checkInMonth, checkInDay, checkInYear, checkOutMonth, checkOutDay, checkOutYear) {
+        if (checkInMonth == checkOutMonth && checkInYear == checkOutYear) {
+            if (checkInDay == checkOutDay) "$checkInMonth $checkInDay, $checkInYear"
+            else "$checkInMonth $checkInDay - $checkOutDay, $checkInYear"
+        } else if (checkInYear == checkOutYear) {
+            "$checkInMonth $checkInDay - $checkOutMonth $checkOutDay, $checkInYear"
+        } else {
+            "$checkInMonth $checkInDay, $checkInYear - $checkOutMonth $checkOutDay, $checkOutYear"
         }
     }
 
-    val currentFormattedDate = remember(checkInDay, checkOutDay, activeMonthShort, activeYear) {
-        if (checkInDay == checkOutDay) "$activeMonthShort $checkInDay, $activeYear"
-        else "$activeMonthShort $checkInDay - $activeMonthShort $checkOutDay, $activeYear"
+    val stayDurationNights = remember(checkInMonth, checkInDay, checkInYear, checkOutMonth, checkOutDay, checkOutYear) {
+        val inCal = java.util.Calendar.getInstance().apply {
+            clear()
+            val mIdx = monthNamesList.indexOf(checkInMonth).let { if (it != -1) it else 9 }
+            set(checkInYear, mIdx, checkInDay)
+        }
+        val outCal = java.util.Calendar.getInstance().apply {
+            clear()
+            val mIdx = monthNamesList.indexOf(checkOutMonth).let { if (it != -1) it else 9 }
+            set(checkOutYear, mIdx, checkOutDay)
+        }
+        val diffMs = outCal.timeInMillis - inCal.timeInMillis
+        val days = (diffMs / (1000 * 60 * 60 * 24)).toInt()
+        maxOf(1, days)
+    }
+
+    fun applyNightsDuration(nightsToSet: Int) {
+        val inCal = java.util.Calendar.getInstance().apply {
+            clear()
+            val mIdx = monthNamesList.indexOf(checkInMonth).let { if (it != -1) it else 9 }
+            set(checkInYear, mIdx, checkInDay)
+        }
+        inCal.add(java.util.Calendar.DAY_OF_MONTH, maxOf(1, nightsToSet))
+        checkOutDay = inCal.get(java.util.Calendar.DAY_OF_MONTH)
+        checkOutMonth = monthNamesList[inCal.get(java.util.Calendar.MONTH)]
+        checkOutYear = inCal.get(java.util.Calendar.YEAR)
     }
 
     Column(
@@ -189,7 +209,7 @@ fun ChooseCategoryScreen(
                 Spacer(modifier = Modifier.width(10.dp))
                 Column(modifier = Modifier.padding(top = 15.dp)) {
                     Text(
-                        text = "Choose Category",
+                        text = "Choose Category — ${initialUnitName.ifBlank { "Unit 12A" }}",
                         fontSize = 20.sp,
                         fontWeight = FontWeight.Bold,
                         color = TextDark
@@ -206,54 +226,27 @@ fun ChooseCategoryScreen(
 
             Spacer(modifier = Modifier.height(14.dp))
 
-            // Unit Selector Section
-            Text(
-                text = "Select Unit",
-                fontSize = 16.sp,
-                fontWeight = FontWeight.Bold,
-                color = TextDark
-            )
-            Spacer(modifier = Modifier.height(10.dp))
 
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                unitOptions.forEachIndexed { idx, unitName ->
-                    val isSelected = selectedUnitIndex == idx
-                    Surface(
-                        shape = RoundedCornerShape(20.dp),
-                        color = if (isSelected) PurplePrimary else Color(0xFFF3EDFD),
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(20.dp))
-                            .clickable { selectedUnitIndex = idx }
-                    ) {
-                        Box(
-                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(
-                                text = unitName,
-                                fontSize = 13.sp,
-                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                                color = if (isSelected) Color.White else TextMuted
-                            )
-                        }
-                    }
-                }
-            }
-
-            Spacer(modifier = Modifier.height(16.dp))
 
             // Check-in and Check-out Date Range Picker Section
-            Text(
-                text = "Select Date Range",
-                fontSize = 16.sp,
-                fontWeight = FontWeight.Bold,
-                color = TextDark
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Select Date Range",
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = TextDark
+                )
+                Text(
+                    text = "🌙 $stayDurationNights ${if (stayDurationNights == 1) "Night" else "Nights"}",
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = PurplePrimary
+                )
+            }
             Spacer(modifier = Modifier.height(8.dp))
 
             Surface(
@@ -262,80 +255,168 @@ fun ChooseCategoryScreen(
                 border = BorderStroke(1.dp, Color(0xFFE2D6F5)),
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Row(
+                Column(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(horizontal = 14.dp, vertical = 10.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    // Clickable Check-in Date Box with Calendar Icon
-                    Surface(
-                        shape = RoundedCornerShape(12.dp),
-                        color = Color(0xFFF3EDFD),
-                        modifier = Modifier
-                            .weight(1f)
-                            .clip(RoundedCornerShape(12.dp))
-                            .clickable { showCheckInDatePicker = true }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        // Clickable Check-in Date Box with Calendar Icon
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = Color(0xFFF3EDFD),
+                            modifier = Modifier
+                                .weight(1f)
+                                .clip(RoundedCornerShape(12.dp))
+                                .clickable { showCheckInDatePicker = true }
                         ) {
-                            Icon(
-                                imageVector = Icons.Default.DateRange,
-                                contentDescription = "Pick Check-in Date",
-                                tint = PurplePrimary,
-                                modifier = Modifier.size(20.dp)
-                            )
-                            Column {
-                                Text(text = "Check-in Date", fontSize = 10.sp, color = TextMuted)
-                                Text(
-                                    text = "$activeMonthShort $checkInDay, $activeYear",
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = TextDark
+                            Row(
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.DateRange,
+                                    contentDescription = "Pick Check-in Date",
+                                    tint = PurplePrimary,
+                                    modifier = Modifier.size(20.dp)
                                 )
+                                Column {
+                                    Text(text = "Check-in Date", fontSize = 10.sp, color = TextMuted)
+                                    Text(
+                                        text = "$checkInMonth $checkInDay, $checkInYear",
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = TextDark
+                                    )
+                                }
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(text = "➞", fontSize = 16.sp, color = PurplePrimary, fontWeight = FontWeight.Bold)
+                        Spacer(modifier = Modifier.width(6.dp))
+
+                        // Clickable Check-out Date Box with Calendar Icon
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = Color(0xFFF3EDFD),
+                            modifier = Modifier
+                                .weight(1f)
+                                .clip(RoundedCornerShape(12.dp))
+                                .clickable { showCheckOutDatePicker = true }
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.DateRange,
+                                    contentDescription = "Pick Check-out Date",
+                                    tint = PurplePrimary,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                                Column {
+                                    Text(text = "Check-out Date", fontSize = 10.sp, color = TextMuted)
+                                    Text(
+                                        text = "$checkOutMonth $checkOutDay, $checkOutYear",
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = TextDark
+                                    )
+                                }
                             }
                         }
                     }
 
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(text = "➞", fontSize = 16.sp, color = PurplePrimary, fontWeight = FontWeight.Bold)
-                    Spacer(modifier = Modifier.width(6.dp))
+                    HorizontalDivider(color = Color(0xFFE2D6F5))
 
-                    // Clickable Check-out Date Box with Calendar Icon
-                    Surface(
-                        shape = RoundedCornerShape(12.dp),
-                        color = Color(0xFFF3EDFD),
-                        modifier = Modifier
-                            .weight(1f)
-                            .clip(RoundedCornerShape(12.dp))
-                            .clickable { showCheckOutDatePicker = true }
+                    // Stepper row to adjust duration directly
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
+                        Text(
+                            text = "Length of Stay:",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Medium,
+                            color = TextMuted
+                        )
+
                         Row(
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            Icon(
-                                imageVector = Icons.Default.DateRange,
-                                contentDescription = "Pick Check-out Date",
-                                tint = PurplePrimary,
-                                modifier = Modifier.size(20.dp)
+                            IconButton(
+                                onClick = { applyNightsDuration(stayDurationNights - 1) },
+                                enabled = stayDurationNights > 1,
+                                modifier = Modifier
+                                    .size(28.dp)
+                                    .clip(CircleShape)
+                                    .background(if (stayDurationNights > 1) Color(0xFFF3EDFD) else Color(0xFFE0E0E0))
+                            ) {
+                                Text("—", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = if (stayDurationNights > 1) PurplePrimary else Color.Gray)
+                            }
+
+                            Text(
+                                text = "$stayDurationNights ${if (stayDurationNights == 1) "Night" else "Nights"}",
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = TextDark
                             )
-                            Column {
-                                Text(text = "Check-out Date", fontSize = 10.sp, color = TextMuted)
-                                Text(
-                                    text = "$activeMonthShort $checkOutDay, $activeYear",
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = TextDark
-                                )
+
+                            IconButton(
+                                onClick = { applyNightsDuration(stayDurationNights + 1) },
+                                modifier = Modifier
+                                    .size(28.dp)
+                                    .clip(CircleShape)
+                                    .background(Color(0xFFF3EDFD))
+                            ) {
+                                Text("+", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = PurplePrimary)
                             }
                         }
                     }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            // Quick Duration Preset Chips
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                listOf(
+                    1 to "1 Night",
+                    2 to "2 Nights",
+                    3 to "3 Nights",
+                    5 to "5 Nights",
+                    7 to "7 Nights (1 Wk)",
+                    14 to "14 Nights",
+                    30 to "30 Nights (1 Mo)"
+                ).forEach { (nightsVal, labelStr) ->
+                    val isSelected = stayDurationNights == nightsVal
+                    FilterChip(
+                        selected = isSelected,
+                        onClick = { applyNightsDuration(nightsVal) },
+                        label = { Text(labelStr, fontSize = 11.sp, fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal) },
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = PurplePrimary,
+                            selectedLabelColor = Color.White,
+                            containerColor = Color(0xFFF8F5FE),
+                            labelColor = TextDark
+                        ),
+                        shape = RoundedCornerShape(12.dp)
+                    )
                 }
             }
 
@@ -542,7 +623,7 @@ fun ChooseCategoryScreen(
                     onSaveClick(
                         selectedShape.statusLabel,
                         selectedShape.color,
-                        unitOptions[selectedUnitIndex],
+                        initialUnitName.ifBlank { unitOptions.getOrElse(selectedUnitIndex) { "Unit 12A" } },
                         currentFormattedDate
                     )
                 },
@@ -565,8 +646,31 @@ fun ChooseCategoryScreen(
     if (showCheckInDatePicker || showCheckOutDatePicker) {
         val isCheckIn = showCheckInDatePicker
         val titleText = if (isCheckIn) "Select Check-in Date" else "Select Check-out Date"
-        val targetInitialDay = if (isCheckIn) checkInDay else checkOutDay
-        var tempSelectedDay by remember(isCheckIn, targetInitialDay) { mutableIntStateOf(targetInitialDay) }
+        val startM = if (isCheckIn) checkInMonth else checkOutMonth
+        val startY = if (isCheckIn) checkInYear else checkOutYear
+        val startD = if (isCheckIn) checkInDay else checkOutDay
+
+        var activePickerMonthShort by remember(isCheckIn) { mutableStateOf(startM) }
+        var activePickerYear by remember(isCheckIn) { mutableIntStateOf(startY) }
+        var tempSelectedDay by remember(isCheckIn) { mutableIntStateOf(startD) }
+
+        val fullPickerMonthName = remember(activePickerMonthShort) {
+            when (activePickerMonthShort.lowercase()) {
+                "jan" -> "January"
+                "feb" -> "February"
+                "mar" -> "March"
+                "apr" -> "April"
+                "may" -> "May"
+                "jun" -> "June"
+                "jul" -> "July"
+                "aug" -> "August"
+                "sept", "sep" -> "September"
+                "oct" -> "October"
+                "nov" -> "November"
+                "dec" -> "December"
+                else -> activePickerMonthShort
+            }
+        }
 
         AlertDialog(
             onDismissRequest = {
@@ -594,9 +698,13 @@ fun ChooseCategoryScreen(
                     ) {
                         IconButton(
                             onClick = {
-                                val currentIdx = monthNamesList.indexOf(activeMonthShort)
-                                val prevIdx = if (currentIdx > 0) currentIdx - 1 else 11
-                                activeMonthShort = monthNamesList[prevIdx]
+                                val currentIdx = monthNamesList.indexOf(activePickerMonthShort)
+                                if (currentIdx > 0) {
+                                    activePickerMonthShort = monthNamesList[currentIdx - 1]
+                                } else {
+                                    activePickerMonthShort = monthNamesList[11]
+                                    activePickerYear--
+                                }
                             },
                             modifier = Modifier.size(28.dp)
                         ) {
@@ -604,7 +712,7 @@ fun ChooseCategoryScreen(
                         }
 
                         Text(
-                            text = "$fullMonthName $activeYear",
+                            text = "$fullPickerMonthName $activePickerYear",
                             fontSize = 15.sp,
                             fontWeight = FontWeight.Bold,
                             color = PurplePrimary
@@ -612,9 +720,13 @@ fun ChooseCategoryScreen(
 
                         IconButton(
                             onClick = {
-                                val currentIdx = monthNamesList.indexOf(activeMonthShort)
-                                val nextIdx = if (currentIdx < 11) currentIdx + 1 else 0
-                                activeMonthShort = monthNamesList[nextIdx]
+                                val currentIdx = monthNamesList.indexOf(activePickerMonthShort)
+                                if (currentIdx < 11) {
+                                    activePickerMonthShort = monthNamesList[currentIdx + 1]
+                                } else {
+                                    activePickerMonthShort = monthNamesList[0]
+                                    activePickerYear++
+                                }
                             },
                             modifier = Modifier.size(28.dp)
                         ) {
@@ -633,39 +745,64 @@ fun ChooseCategoryScreen(
                         }
                     }
 
-                    val daysGrid = (1..31).toList().chunked(7)
-                    Column(
+                    val monthIdx = remember(activePickerMonthShort) {
+                        val idx = monthNamesList.indexOf(activePickerMonthShort)
+                        if (idx != -1) idx else 9
+                    }
+
+                    val maxDaysInActiveMonth = remember(monthIdx, activePickerYear) {
+                        val cal = java.util.Calendar.getInstance().apply {
+                            clear()
+                            set(java.util.Calendar.YEAR, activePickerYear)
+                            set(java.util.Calendar.MONTH, monthIdx)
+                            set(java.util.Calendar.DAY_OF_MONTH, 1)
+                        }
+                        cal.getActualMaximum(java.util.Calendar.DAY_OF_MONTH)
+                    }
+
+                    val leadingOffset = remember(monthIdx, activePickerYear) {
+                        val cal = java.util.Calendar.getInstance().apply {
+                            clear()
+                            set(java.util.Calendar.YEAR, activePickerYear)
+                            set(java.util.Calendar.MONTH, monthIdx)
+                            set(java.util.Calendar.DAY_OF_MONTH, 1)
+                        }
+                        val dow = cal.get(java.util.Calendar.DAY_OF_WEEK)
+                        (dow + 5) % 7
+                    }
+
+                    val totalGridCells = leadingOffset + maxDaysInActiveMonth
+
+                    LazyVerticalGrid(
+                        columns = GridCells.Fixed(7),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 280.dp),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
                         verticalArrangement = Arrangement.spacedBy(6.dp),
-                        modifier = Modifier.fillMaxWidth()
+                        userScrollEnabled = false
                     ) {
-                        daysGrid.forEach { rowDays ->
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceAround
-                            ) {
-                                rowDays.forEach { dayNum ->
-                                    val isSelected = dayNum == tempSelectedDay
-                                    Surface(
-                                        shape = CircleShape,
-                                        color = if (isSelected) PurplePrimary else Color.Transparent,
-                                        modifier = Modifier
-                                            .size(32.dp)
-                                            .clip(CircleShape)
-                                            .clickable { tempSelectedDay = dayNum }
-                                    ) {
-                                        Box(contentAlignment = Alignment.Center) {
-                                            Text(
-                                                text = dayNum.toString(),
-                                                fontSize = 13.sp,
-                                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                                                color = if (isSelected) Color.White else TextDark
-                                            )
-                                        }
-                                    }
-                                }
-                                if (rowDays.size < 7) {
-                                    repeat(7 - rowDays.size) {
-                                        Spacer(modifier = Modifier.size(32.dp))
+                        items(count = totalGridCells) { index ->
+                            if (index < leadingOffset) {
+                                Box(modifier = Modifier.size(32.dp))
+                            } else {
+                                val dayNum = index - leadingOffset + 1
+                                val isSelected = dayNum == tempSelectedDay
+                                Surface(
+                                    shape = CircleShape,
+                                    color = if (isSelected) PurplePrimary else Color.Transparent,
+                                    modifier = Modifier
+                                        .size(32.dp)
+                                        .clip(CircleShape)
+                                        .clickable { tempSelectedDay = dayNum }
+                                ) {
+                                    Box(contentAlignment = Alignment.Center) {
+                                        Text(
+                                            text = dayNum.toString(),
+                                            fontSize = 13.sp,
+                                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                            color = if (isSelected) Color.White else TextDark
+                                        )
                                     }
                                 }
                             }
@@ -677,14 +814,48 @@ fun ChooseCategoryScreen(
                 Button(
                     onClick = {
                         if (isCheckIn) {
+                            checkInMonth = activePickerMonthShort
+                            checkInYear = activePickerYear
                             checkInDay = tempSelectedDay
-                            if (checkOutDay <= checkInDay) {
-                                checkOutDay = minOf(31, checkInDay + 1)
+
+                            val inCal = java.util.Calendar.getInstance().apply {
+                                clear()
+                                val mIdx = monthNamesList.indexOf(checkInMonth).let { if (it != -1) it else 9 }
+                                set(checkInYear, mIdx, checkInDay)
+                            }
+                            val outCal = java.util.Calendar.getInstance().apply {
+                                clear()
+                                val mIdx = monthNamesList.indexOf(checkOutMonth).let { if (it != -1) it else 9 }
+                                set(checkOutYear, mIdx, checkOutDay)
+                            }
+
+                            if (!outCal.after(inCal)) {
+                                inCal.add(java.util.Calendar.DAY_OF_MONTH, 1)
+                                checkOutDay = inCal.get(java.util.Calendar.DAY_OF_MONTH)
+                                checkOutMonth = monthNamesList[inCal.get(java.util.Calendar.MONTH)]
+                                checkOutYear = inCal.get(java.util.Calendar.YEAR)
                             }
                         } else {
+                            checkOutMonth = activePickerMonthShort
+                            checkOutYear = activePickerYear
                             checkOutDay = tempSelectedDay
-                            if (checkInDay >= checkOutDay) {
-                                checkInDay = maxOf(1, checkOutDay - 1)
+
+                            val inCal = java.util.Calendar.getInstance().apply {
+                                clear()
+                                val mIdx = monthNamesList.indexOf(checkInMonth).let { if (it != -1) it else 9 }
+                                set(checkInYear, mIdx, checkInDay)
+                            }
+                            val outCal = java.util.Calendar.getInstance().apply {
+                                clear()
+                                val mIdx = monthNamesList.indexOf(checkOutMonth).let { if (it != -1) it else 9 }
+                                set(checkOutYear, mIdx, checkOutDay)
+                            }
+
+                            if (!outCal.after(inCal)) {
+                                outCal.add(java.util.Calendar.DAY_OF_MONTH, -1)
+                                checkInDay = outCal.get(java.util.Calendar.DAY_OF_MONTH)
+                                checkInMonth = monthNamesList[outCal.get(java.util.Calendar.MONTH)]
+                                checkInYear = outCal.get(java.util.Calendar.YEAR)
                             }
                         }
                         showCheckInDatePicker = false

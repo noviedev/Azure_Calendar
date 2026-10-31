@@ -8,8 +8,6 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.*
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.setValue
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.platform.LocalContext
 import androidx.fragment.app.FragmentActivity
@@ -108,9 +106,9 @@ class MainActivity : FragmentActivity() {
                 }
             }
 
-            // 2. Sync catalog & restart listener whenever switching to Owner or Agent dashboard
+            // 2. Sync catalog & restart listener whenever switching to Owner, Agent, or Unit screens
             LaunchedEffect(currentScreen) {
-                if (currentScreen == "owner_dashboard" || currentScreen == "agent_dashboard") {
+                if (currentScreen == "owner_dashboard" || currentScreen == "agent_dashboard" || currentScreen == "units_directory") {
                     FirebaseCloudSyncManager.startRealtimeCloudListener(context, forceRestart = false)
                     FirebaseCloudSyncManager.syncAllLocalUnitsToCloud(context)
                 }
@@ -316,21 +314,29 @@ class MainActivity : FragmentActivity() {
                         }
                     }
 
-                    "add_edit_unit" -> AddEditUnitScreen(
-                        onBackClick = { currentScreen = "owner_dashboard" },
-                        onSaveSuccess = {
-                            FirebaseCloudSyncManager.syncAllLocalUnitsToCloud(context)
-                            currentScreen = "owner_dashboard"
-                        },
-                        onDeleteUnit = {
-                            FirebaseCloudSyncManager.syncAllLocalUnitsToCloud(context)
-                            currentScreen = "owner_dashboard"
+                    "add_edit_unit" -> {
+                        key(cloudSyncTick) {
+                            AddEditUnitScreen(
+                                onBackClick = { currentScreen = "owner_dashboard" },
+                                onSaveSuccess = {
+                                    FirebaseCloudSyncManager.syncAllLocalUnitsToCloud(context)
+                                    currentScreen = "owner_dashboard"
+                                },
+                                onDeleteUnit = {
+                                    FirebaseCloudSyncManager.syncAllLocalUnitsToCloud(context)
+                                    currentScreen = "owner_dashboard"
+                                }
+                            )
                         }
-                    )
+                    }
 
-                    "invoices" -> InvoiceBillingScreen(
-                        onBackClick = { currentScreen = "owner_dashboard" }
-                    )
+                    "invoices" -> {
+                        key(cloudSyncTick) {
+                            InvoiceBillingScreen(
+                                onBackClick = { currentScreen = "owner_dashboard" }
+                            )
+                        }
+                    }
                 }
             }
         }

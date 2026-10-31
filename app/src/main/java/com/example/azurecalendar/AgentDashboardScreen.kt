@@ -549,10 +549,11 @@ private fun CalendarTabContent(
     }
 
     val calendarDays = remember(activeMonthName, activeYearNumber, currentSubScreen, isPreview, refreshTrigger, dbEventsState.value) {
+        val baseDays = createSampleCalendarMonth(activeMonthName, activeYearNumber, agentName)
         if (isPreview) {
-            createSampleCalendarMonth(agentName)
+            baseDays
         } else {
-            createSampleCalendarMonth(agentName).map { day ->
+            baseDays.map { day ->
                 val dbEvents = dbEventsState.value.filter { evt ->
                     val evtDate = evt["date"] ?: ""
                     val shortM = activeMonthName.take(3)

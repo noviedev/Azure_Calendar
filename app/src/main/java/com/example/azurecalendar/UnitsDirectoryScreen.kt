@@ -14,6 +14,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.shape.CircleShape
@@ -37,6 +39,7 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.azurecalendar.ui.theme.AzureCalendarTheme
+import java.io.File
 
 private val PurplePrimary get() = AzureCalendarColors.PurplePrimary
 private val ScreenBg = Color(0xFFFAF5FC)
@@ -50,7 +53,6 @@ fun isDateCoveredByEvent(evtDate: String, dayNumber: Int, currentMonthName: Stri
 
     val monthNamesList = listOf("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec")
 
-    // 1. If evtDate represents a range e.g. "Oct 30 - Nov 2, 2026"
     if (evtDate.contains("-") || evtDate.contains("to", ignoreCase = true)) {
         val parts = evtDate.split("-", "to", ignoreCase = true)
         if (parts.size >= 2) {
@@ -80,13 +82,14 @@ fun isDateCoveredByEvent(evtDate: String, dayNumber: Int, currentMonthName: Stri
         }
     }
 
-    // 2. Exact single date match
     val dayNums = Regex("\\b([1-9]|[12][0-9]|3[01])\\b")
         .findAll(evtDate)
         .mapNotNull { it.value.toIntOrNull() }
         .toList()
 
     return dayNums.contains(dayNumber)
+
+
 }
 
 fun isSameUnit(unit1: String, unit2: String): Boolean {
@@ -101,7 +104,7 @@ data class UnitCatalogItem(
     val unitNumber: String,
     val tower: String,
     val description: String,
-    val status: String, // "Available", "Check-in", "Reserved", "Under Maintenance", "Not Available"
+    val status: String,
     val imageResId: Int,
     val imageUri: String? = null
 )
@@ -186,7 +189,6 @@ fun UnitsDirectoryScreen(
                 deletedSet.none { isSameUnit(it, unit.unitNumber) }
             }
 
-        // Update each unit's status depending on the selected DATE in SQLite!
         allUnitsList.map { unitItem ->
             val fullMonthName = monthsList[selectedMonthIndex]
             val monthNum = selectedMonthIndex + 1
@@ -217,7 +219,7 @@ fun UnitsDirectoryScreen(
                 matchingEvent != null -> {
                     val shape = matchingEvent["shape"] ?: ""
                     val title = matchingEvent["title"] ?: ""
-                    val combined = "$shape $title"
+                    val combined = "$shape$title"
                     when {
                         combined.contains("Check", ignoreCase = true) || combined.contains("Heart", ignoreCase = true) -> "Check-in"
                         combined.contains("Reserve", ignoreCase = true) || combined.contains("Diamond", ignoreCase = true) -> "Reserved"
@@ -256,7 +258,6 @@ fun UnitsDirectoryScreen(
     ) {
         item {
             Spacer(modifier = Modifier.height(16.dp))
-            // Title & Date Bar
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -269,7 +270,16 @@ fun UnitsDirectoryScreen(
                     color = TextDark
                 )
 
-                // Date Navigation Bar
+                val maxDaysInSelectedMonth = remember(selectedMonthIndex, selectedYearNumber) {
+                    val cal = java.util.Calendar.getInstance().apply {
+                        clear()
+                        set(java.util.Calendar.YEAR, selectedYearNumber)
+                        set(java.util.Calendar.MONTH, selectedMonthIndex)
+                        set(java.util.Calendar.DAY_OF_MONTH, 1)
+                    }
+                    cal.getActualMaximum(java.util.Calendar.DAY_OF_MONTH)
+                }
+
                 Surface(
                     shape = RoundedCornerShape(16.dp),
                     color = Color(0xFFF3EDFD)
@@ -282,8 +292,22 @@ fun UnitsDirectoryScreen(
                             onClick = {
                                 if (selectedDayNumber > 1) {
                                     selectedDayNumber--
-                                    onDateChange(selectedDayNumber)
+                                } else {
+                                    if (selectedMonthIndex > 0) {
+                                        selectedMonthIndex--
+                                    } else {
+                                        selectedMonthIndex = 11
+                                        selectedYearNumber--
+                                    }
+                                    val cal = java.util.Calendar.getInstance().apply {
+                                        clear()
+                                        set(java.util.Calendar.YEAR, selectedYearNumber)
+                                        set(java.util.Calendar.MONTH, selectedMonthIndex)
+                                        set(java.util.Calendar.DAY_OF_MONTH, 1)
+                                    }
+                                    selectedDayNumber = cal.getActualMaximum(java.util.Calendar.DAY_OF_MONTH)
                                 }
+                                onDateChange(selectedDayNumber)
                             },
                             modifier = Modifier.size(32.dp)
                         ) {
@@ -307,10 +331,18 @@ fun UnitsDirectoryScreen(
 
                         IconButton(
                             onClick = {
-                                if (selectedDayNumber < 30) {
+                                if (selectedDayNumber < maxDaysInSelectedMonth) {
                                     selectedDayNumber++
-                                    onDateChange(selectedDayNumber)
+                                } else {
+                                    selectedDayNumber = 1
+                                    if (selectedMonthIndex < 11) {
+                                        selectedMonthIndex++
+                                    } else {
+                                        selectedMonthIndex = 0
+                                        selectedYearNumber++
+                                    }
                                 }
+                                onDateChange(selectedDayNumber)
                             },
                             modifier = Modifier.size(32.dp)
                         ) {
@@ -326,7 +358,6 @@ fun UnitsDirectoryScreen(
 
             Spacer(modifier = Modifier.height(12.dp))
 
-            // Search Bar
             OutlinedTextField(
                 value = searchQuery,
                 onValueChange = { searchQuery = it },
@@ -351,7 +382,6 @@ fun UnitsDirectoryScreen(
 
             Spacer(modifier = Modifier.height(14.dp))
 
-            // Filter Chips
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -384,7 +414,6 @@ fun UnitsDirectoryScreen(
             Spacer(modifier = Modifier.height(4.dp))
         }
 
-        // Unit Cards
         items(filteredUnits) { unit ->
             val isAvailable = unit.status.equals("Available", ignoreCase = true)
             val isRented = unit.status.contains("Rented", ignoreCase = true)
@@ -422,12 +451,11 @@ fun UnitsDirectoryScreen(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
-                        val isValidUri = !unit.imageUri.isNullOrBlank() && (unit.imageUri.startsWith("content://") || unit.imageUri.startsWith("file://") || java.io.File(unit.imageUri).exists())
+                        val uriStr = unit.imageUri ?: ""
+                        val isValidFile = uriStr.isNotBlank() && (uriStr.startsWith("content://") || uriStr.startsWith("file://") || File(uriStr).exists())
 
-                        if (isValidUri) {
-                            val uriStr = unit.imageUri ?: ""
-                            val fileObj = java.io.File(uriStr)
-                            val imageModel: Any = if (fileObj.exists()) fileObj else uriStr
+                        if (isValidFile) {
+                            val imageModel: Any = if (uriStr.startsWith("file://")) File(Uri.parse(uriStr).path ?: "") else uriStr
 
                             AsyncImage(
                                 model = imageModel,
@@ -524,7 +552,6 @@ fun UnitsDirectoryScreen(
         }
     }
 
-    // Mini Calendar Date Picker Dialog Popup
     if (showDatePickerDialog) {
         var pickerMonthIndex by remember { mutableIntStateOf(selectedMonthIndex) }
         var pickerYear by remember { mutableIntStateOf(selectedYearNumber) }
@@ -607,47 +634,90 @@ fun UnitsDirectoryScreen(
                         }
                     }
 
-                    val daysList = (1..30).toList()
-                    val rows = daysList.chunked(7)
+                    val pickerMaxDays = remember(pickerMonthIndex, pickerYear) {
+                        val cal = java.util.Calendar.getInstance().apply {
+                            clear()
+                            set(java.util.Calendar.YEAR, pickerYear)
+                            set(java.util.Calendar.MONTH, pickerMonthIndex)
+                            set(java.util.Calendar.DAY_OF_MONTH, 1)
+                        }
+                        cal.getActualMaximum(java.util.Calendar.DAY_OF_MONTH)
+                    }
 
-                    Column(
+                    val pickerOffset = remember(pickerMonthIndex, pickerYear) {
+                        val cal = java.util.Calendar.getInstance().apply {
+                            clear()
+                            set(java.util.Calendar.YEAR, pickerYear)
+                            set(java.util.Calendar.MONTH, pickerMonthIndex)
+                            set(java.util.Calendar.DAY_OF_MONTH, 1)
+                        }
+                        val dow = cal.get(java.util.Calendar.DAY_OF_WEEK)
+                        (dow + 5) % 7
+                    }
+
+                    val totalPickerCells = pickerOffset + pickerMaxDays
+                    val pickerShortMonthName = pickerMonthsList[pickerMonthIndex].take(3)
+
+                    LazyVerticalGrid(
+                        columns = GridCells.Fixed(7),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 280.dp),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
                         verticalArrangement = Arrangement.spacedBy(6.dp),
-                        modifier = Modifier.fillMaxWidth()
+                        userScrollEnabled = false
                     ) {
-                        rows.forEach { rowDays ->
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceAround
-                            ) {
-                                rowDays.forEach { dayNum ->
-                                    val isSelected = dayNum == selectedDayNumber
+                        items(count = totalPickerCells) { index ->
+                            if (index < pickerOffset) {
+                                Box(modifier = Modifier.size(32.dp))
+                            } else {
+                                val dayNum = index - pickerOffset + 1
+                                val isSelected = dayNum == selectedDayNumber && pickerMonthIndex == selectedMonthIndex && pickerYear == selectedYearNumber
+
+                                val hasEvents = remember(dbEventsState.value, dayNum, pickerMonthIndex, pickerYear) {
+                                    dbEventsState.value.any { evt ->
+                                        val evtDate = evt["date"] ?: ""
+                                        val monthMatches = evtDate.contains(pickerShortMonthName, ignoreCase = true) || evtDate.contains(pickerMonthsList[pickerMonthIndex], ignoreCase = true)
+                                        val yearMatches = evtDate.contains(pickerYear.toString())
+                                        monthMatches && yearMatches && isDateCoveredByEvent(evtDate, dayNum, pickerMonthsList[pickerMonthIndex])
+                                    }
+                                }
+
+                                Column(
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    verticalArrangement = Arrangement.Center,
+                                    modifier = Modifier
+                                        .size(32.dp)
+                                        .clip(CircleShape)
+                                        .clickable {
+                                            selectedDayNumber = dayNum
+                                            selectedMonthIndex = pickerMonthIndex
+                                            selectedYearNumber = pickerYear
+                                            onDateChange(dayNum)
+                                            showDatePickerDialog = false
+                                        }
+                                ) {
                                     Surface(
                                         shape = CircleShape,
                                         color = if (isSelected) PurplePrimary else Color.Transparent,
-                                        modifier = Modifier
-                                            .size(32.dp)
-                                            .clip(CircleShape)
-                                            .clickable {
-                                                selectedDayNumber = dayNum
-                                                selectedMonthIndex = pickerMonthIndex
-                                                selectedYearNumber = pickerYear
-                                                onDateChange(dayNum)
-                                                showDatePickerDialog = false
-                                            }
+                                        modifier = Modifier.size(26.dp)
                                     ) {
                                         Box(contentAlignment = Alignment.Center) {
                                             Text(
                                                 text = dayNum.toString(),
-                                                fontSize = 13.sp,
+                                                fontSize = 12.sp,
                                                 fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
                                                 color = if (isSelected) Color.White else TextDark
                                             )
                                         }
                                     }
-                                }
-                                if (rowDays.size < 7) {
-                                    repeat(7 - rowDays.size) {
-                                        Spacer(modifier = Modifier.size(32.dp))
+                                    if (hasEvents) {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(3.dp)
+                                                .clip(CircleShape)
+                                                .background(if (isSelected) Color.White else PurplePrimary)
+                                        )
                                     }
                                 }
                             }
@@ -664,6 +734,8 @@ fun UnitsDirectoryScreen(
             shape = RoundedCornerShape(20.dp)
         )
     }
+
+
 }
 
 @Preview(showBackground = true)

@@ -1,16 +1,10 @@
 package com.example.azurecalendar
 
-import android.app.Activity
 import android.content.Context
 import android.util.Log
 import androidx.credentials.CredentialManager
 import androidx.credentials.GetCredentialRequest
 import androidx.credentials.exceptions.GetCredentialException
-import com.facebook.CallbackManager
-import com.facebook.FacebookCallback
-import com.facebook.FacebookException
-import com.facebook.login.LoginManager
-import com.facebook.login.LoginResult
 import com.google.android.libraries.identity.googleid.GetGoogleIdOption
 import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
 import kotlinx.coroutines.CoroutineScope
@@ -20,7 +14,7 @@ import kotlinx.coroutines.launch
 object SocialAuthHelper {
 
     // Replace with your Web Client ID from Google Cloud Console
-    private const val GOOGLE_WEB_CLIENT_ID = "YOUR_WEB_CLIENT_ID.apps.googleusercontent.com"
+    private const val GOOGLE_WEB_CLIENT_ID = "278906261627-4q5bqb5d03v9cque9c1f9vvbtj1tu6nl.apps.googleusercontent.com"
 
     fun signInWithGoogle(
         context: Context,
@@ -60,36 +54,5 @@ object SocialAuthHelper {
                 onError(e.message ?: "Google sign in failed")
             }
         }
-    }
-
-    fun signInWithFacebook(
-        activity: Activity,
-        callbackManager: CallbackManager,
-        onSuccess: (String) -> Unit, // accessToken
-        onError: (String) -> Unit
-    ) {
-        LoginManager.getInstance().registerCallback(
-            callbackManager,
-            object : FacebookCallback<LoginResult> {
-                override fun onSuccess(result: LoginResult) {
-                    val token = result.accessToken.token
-                    onSuccess(token)
-                }
-
-                override fun onCancel() {
-                    onError("Facebook login cancelled")
-                }
-
-                override fun onError(error: FacebookException) {
-                    Log.e("FB_AUTH", "Facebook Sign In Error: ${error.message}")
-                    onError(error.message ?: "Facebook login failed")
-                }
-            }
-        )
-
-        LoginManager.getInstance().logInWithReadPermissions(
-            activity,
-            listOf("email", "public_profile")
-        )
     }
 }

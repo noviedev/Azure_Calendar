@@ -43,33 +43,39 @@ fun AzureCalendarView(
     onDateRangeSelected: (checkInDay: Int, checkOutDay: Int) -> Unit = { _, _ -> },
     modifier: Modifier = Modifier,
     unitImageUrl: String? = null,
-    monthTitle: String = "September 2026",
+    monthTitle: String = "",
     onMonthYearSelected: (monthName: String, year: Int) -> Unit = { _, _ -> },
     @Suppress("UNUSED_PARAMETER") onPrevMonthClick: () -> Unit = {},
     @Suppress("UNUSED_PARAMETER") onNextMonthClick: () -> Unit = {}
 ) {
-    var selectedMode by remember { mutableStateOf("Month") }
-    var showDateRangeDialog by remember { mutableStateOf(false) }
-    var checkInDay by remember { mutableIntStateOf(11) }
-    var checkOutDay by remember { mutableIntStateOf(13) }
-    var activeClickedDay by remember { mutableStateOf<DayScheduleModel?>(null) }
-
-    var currentMonthTitle by remember(monthTitle) { mutableStateOf(monthTitle) }
-    var showMonthYearPicker by remember { mutableStateOf(false) }
+    val realTimeCal = remember { java.util.Calendar.getInstance() }
+    val defaultCurrentYear = realTimeCal.get(java.util.Calendar.YEAR)
+    val defaultCurrentMonthIdx = realTimeCal.get(java.util.Calendar.MONTH)
 
     val monthsList = listOf(
         "January", "February", "March", "April", "May", "June",
         "July", "August", "September", "October", "November", "December"
     )
 
+    val defaultMonthTitleText = if (monthTitle.isNotBlank()) monthTitle else "${monthsList[defaultCurrentMonthIdx]} $defaultCurrentYear"
+
+    var selectedMode by remember { mutableStateOf("Month") }
+    var showDateRangeDialog by remember { mutableStateOf(false) }
+    var checkInDay by remember { mutableIntStateOf(realTimeCal.get(java.util.Calendar.DAY_OF_MONTH)) }
+    var checkOutDay by remember { mutableIntStateOf((realTimeCal.get(java.util.Calendar.DAY_OF_MONTH) + 2).coerceAtMost(30)) }
+    var activeClickedDay by remember { mutableStateOf<DayScheduleModel?>(null) }
+
+    var currentMonthTitle by remember(defaultMonthTitleText) { mutableStateOf(defaultMonthTitleText) }
+    var showMonthYearPicker by remember { mutableStateOf(false) }
+
     val parsedMonthIdx = remember(currentMonthTitle) {
         val foundIdx = monthsList.indexOfFirst { currentMonthTitle.contains(it, ignoreCase = true) }
-        if (foundIdx != -1) foundIdx else 9
+        if (foundIdx != -1) foundIdx else defaultCurrentMonthIdx
     }
 
     val parsedYear = remember(currentMonthTitle) {
         val foundYear = Regex("\\b20\\d{2}\\b").find(currentMonthTitle)?.value?.toIntOrNull()
-        foundYear ?: 2026
+        foundYear ?: defaultCurrentYear
     }
 
     var selectedMonthIndex by remember(parsedMonthIdx) { mutableIntStateOf(parsedMonthIdx) }
@@ -256,7 +262,7 @@ fun AzureCalendarView(
                         verticalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
                         Text(
-                            text = "Day Overview - Sept $selectedDayNumber, 2026",
+                            text = "Day Overview — ${currentMonthTitle.take(3)} $selectedDayNumber, $parsedYear",
                             fontSize = 15.sp,
                             fontWeight = FontWeight.Bold,
                             color = AzureCalendarColors.TextDark
@@ -328,70 +334,87 @@ fun AzureCalendarView(
 
                 Spacer(modifier = Modifier.height(10.dp))
 
+                val leadingOffset = remember(parsedMonthIdx, parsedYear) {
+                    val cal = java.util.Calendar.getInstance().apply {
+                        clear()
+                        set(java.util.Calendar.YEAR, parsedYear)
+                        set(java.util.Calendar.MONTH, parsedMonthIdx)
+                        set(java.util.Calendar.DAY_OF_MONTH, 1)
+                    }
+                    val dow = cal.get(java.util.Calendar.DAY_OF_WEEK)
+                    (dow + 5) % 7
+                }
+
+                val totalCells = leadingOffset + days.size
+
                 LazyVerticalGrid(
                     columns = GridCells.Fixed(7),
                     modifier = Modifier
                         .fillMaxWidth()
-                        .heightIn(max = 300.dp),
+                        .heightIn(max = 380.dp),
                     horizontalArrangement = Arrangement.spacedBy(4.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                     userScrollEnabled = false
                 ) {
-                    items(count = days.size) { index ->
-                        val dayModel = days[index]
-                        val isSelected = dayModel.dayNumber == selectedDayNumber
+                    items(count = totalCells) { index ->
+                        if (index < leadingOffset) {
+                            Box(modifier = Modifier.aspectRatio(0.85f))
+                        } else {
+                            val dayModel = days[index - leadingOffset]
+                            val isSelected = dayModel.dayNumber == selectedDayNumber
 
-                        val taggedShapeResList = dayModel.events.mapNotNull { evt ->
-                            val shapeName = evt.description
-                            when {
-                                shapeName.contains("Not", ignoreCase = true) || shapeName.contains("Star", ignoreCase = true) -> R.drawable.star
-                                shapeName.contains("Four", ignoreCase = true) || shapeName.equals("Available", ignoreCase = true) -> R.drawable.four_leaf_clover
-                                shapeName.contains("Heart", ignoreCase = true) || shapeName.contains("Check", ignoreCase = true) -> R.drawable.heart
-                                shapeName.contains("Diamond", ignoreCase = true) || shapeName.contains("Reserve", ignoreCase = true) || shapeName.contains("Extend", ignoreCase = true) -> R.drawable.diamond
-                                shapeName.contains("Circle", ignoreCase = true) || shapeName.contains("Maintenance", ignoreCase = true) -> R.drawable.circle
-                                else -> null
-                            }
-                        }.distinct().take(4)
-
-                        Column(
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            modifier = Modifier
-                                .aspectRatio(0.85f)
-                                .clip(CircleShape)
-                                .clickable {
-                                    activeClickedDay = dayModel
-                                    onDaySelected(dayModel)
-                                },
-                            verticalArrangement = Arrangement.Center
-                        ) {
-                            Surface(
-                                shape = CircleShape,
-                                color = if (isSelected) AzureCalendarColors.PurplePrimary else Color.Transparent,
-                                modifier = Modifier.size(34.dp)
-                            ) {
-                                Box(contentAlignment = Alignment.Center) {
-                                    Text(
-                                        text = dayModel.dayNumber.toString(),
-                                        fontSize = 13.sp,
-                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                                        color = if (isSelected) Color.White else AzureCalendarColors.TextDark
-                                    )
+                            val taggedShapeResList = dayModel.events.mapNotNull { evt ->
+                                val shapeName = evt.description
+                                when {
+                                    shapeName.contains("Not", ignoreCase = true) || shapeName.contains("Star", ignoreCase = true) -> R.drawable.star
+                                    shapeName.contains("Four", ignoreCase = true) || shapeName.equals("Available", ignoreCase = true) -> R.drawable.four_leaf_clover
+                                    shapeName.contains("Heart", ignoreCase = true) || shapeName.contains("Check", ignoreCase = true) -> R.drawable.heart
+                                    shapeName.contains("Diamond", ignoreCase = true) || shapeName.contains("Reserve", ignoreCase = true) || shapeName.contains("Extend", ignoreCase = true) -> R.drawable.diamond
+                                    shapeName.contains("Circle", ignoreCase = true) || shapeName.contains("Maintenance", ignoreCase = true) -> R.drawable.circle
+                                    else -> null
                                 }
-                            }
+                            }.distinct().take(4)
 
-                            if (taggedShapeResList.isNotEmpty()) {
-                                Spacer(modifier = Modifier.height(2.dp))
-                                Row(
-                                    horizontalArrangement = Arrangement.spacedBy(2.dp),
-                                    verticalAlignment = Alignment.CenterVertically
+                            Column(
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                modifier = Modifier
+                                    .aspectRatio(0.85f)
+                                    .clip(CircleShape)
+                                    .clickable {
+                                        activeClickedDay = dayModel
+                                        onDaySelected(dayModel)
+                                    },
+                                verticalArrangement = Arrangement.Center
+                            ) {
+                                Surface(
+                                    shape = CircleShape,
+                                    color = if (isSelected) AzureCalendarColors.PurplePrimary else Color.Transparent,
+                                    modifier = Modifier.size(34.dp)
                                 ) {
-                                    taggedShapeResList.forEach { resId ->
-                                        Image(
-                                            painter = painterResource(id = resId),
-                                            contentDescription = null,
-                                            modifier = Modifier.size(10.dp),
-                                            contentScale = ContentScale.Fit
+                                    Box(contentAlignment = Alignment.Center) {
+                                        Text(
+                                            text = dayModel.dayNumber.toString(),
+                                            fontSize = 13.sp,
+                                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                            color = if (isSelected) Color.White else AzureCalendarColors.TextDark
                                         )
+                                    }
+                                }
+
+                                if (taggedShapeResList.isNotEmpty()) {
+                                    Spacer(modifier = Modifier.height(2.dp))
+                                    Row(
+                                        horizontalArrangement = Arrangement.spacedBy(2.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        taggedShapeResList.forEach { resId ->
+                                            Image(
+                                                painter = painterResource(id = resId),
+                                                contentDescription = null,
+                                                modifier = Modifier.size(10.dp),
+                                                contentScale = ContentScale.Fit
+                                            )
+                                        }
                                     }
                                 }
                             }
@@ -448,7 +471,7 @@ fun AzureCalendarView(
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Text(
-                        text = "Choose check-in and check-out range starting Sept ${activeClickedDay!!.dayNumber}, 2026",
+                        text = "Choose check-in and check-out range starting ${currentMonthTitle.take(3)} ${activeClickedDay!!.dayNumber}, $parsedYear",
                         fontSize = 13.sp,
                         color = AzureCalendarColors.TextMuted
                     )
@@ -464,7 +487,7 @@ fun AzureCalendarView(
                             IconButton(onClick = { if (checkInDay > 1) checkInDay-- }) {
                                 Icon(Icons.AutoMirrored.Filled.KeyboardArrowLeft, contentDescription = "Prev", tint = AzureCalendarColors.PurplePrimary)
                             }
-                            Text("Sept $checkInDay, 2026", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = AzureCalendarColors.PurplePrimary)
+                            Text("${currentMonthTitle.take(3)} $checkInDay, $parsedYear", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = AzureCalendarColors.PurplePrimary)
                             IconButton(onClick = { if (checkInDay < checkOutDay - 1) checkInDay++ }) {
                                 Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = "Next", tint = AzureCalendarColors.PurplePrimary)
                             }
@@ -484,7 +507,7 @@ fun AzureCalendarView(
                             IconButton(onClick = { if (checkOutDay > checkInDay + 1) checkOutDay-- }) {
                                 Icon(Icons.AutoMirrored.Filled.KeyboardArrowLeft, contentDescription = "Prev", tint = AzureCalendarColors.PurplePrimary)
                             }
-                            Text("Sept $checkOutDay, 2026", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = AzureCalendarColors.PurplePrimary)
+                            Text("${currentMonthTitle.take(3)} $checkOutDay, $parsedYear", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = AzureCalendarColors.PurplePrimary)
                             IconButton(onClick = { if (checkOutDay < 30) checkOutDay++ }) {
                                 Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = "Next", tint = AzureCalendarColors.PurplePrimary)
                             }
@@ -495,7 +518,7 @@ fun AzureCalendarView(
 
                     // All Units Status Tags Overview for Clicked Day
                     Text(
-                        text = "Unit Status Tags for Sept ${activeClickedDay!!.dayNumber}",
+                        text = "Unit Status Tags for ${currentMonthTitle.take(3)} ${activeClickedDay!!.dayNumber}",
                         fontSize = 13.sp,
                         fontWeight = FontWeight.Bold,
                         color = AzureCalendarColors.TextDark
@@ -812,18 +835,39 @@ private fun BottomNavItem(
 // 3. SAMPLE DATA GENERATOR & MODELS
 // ============================================================================
 
-fun createSampleCalendarMonth(currentAgentName: String = "Alex"): List<DayScheduleModel> {
-    return (1..30).map { day ->
-        val dayType = when {
-            day == 7 -> CalendarDayType.HOLIDAY
-            day % 7 == 5 || day % 7 == 6 -> CalendarDayType.WEEKEND
+fun createSampleCalendarMonth(
+    monthName: String = "October",
+    year: Int = 2026,
+    currentAgentName: String = "Alex"
+): List<DayScheduleModel> {
+    val monthsList = listOf("january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december")
+    val monthIndex = monthsList.indexOfFirst { monthName.contains(it, ignoreCase = true) }.let { if (it != -1) it else 9 }
+
+    val cal = java.util.Calendar.getInstance().apply {
+        clear()
+        set(java.util.Calendar.YEAR, year)
+        set(java.util.Calendar.MONTH, monthIndex)
+        set(java.util.Calendar.DAY_OF_MONTH, 1)
+    }
+    val daysInMonth = cal.getActualMaximum(java.util.Calendar.DAY_OF_MONTH)
+
+    return (1..daysInMonth).map { day ->
+        val dayCal = java.util.Calendar.getInstance().apply {
+            clear()
+            set(java.util.Calendar.YEAR, year)
+            set(java.util.Calendar.MONTH, monthIndex)
+            set(java.util.Calendar.DAY_OF_MONTH, day)
+        }
+        val dow = dayCal.get(java.util.Calendar.DAY_OF_WEEK)
+        val dayType = when (dow) {
+            java.util.Calendar.SUNDAY, java.util.Calendar.SATURDAY -> CalendarDayType.WEEKEND
             else -> CalendarDayType.WEEKDAY
         }
 
         DayScheduleModel(
             dayNumber = day,
-            month = 9,
-            year = 2026,
+            month = monthIndex + 1,
+            year = year,
             dayType = dayType,
             assignedShape = null,
             events = emptyList(),

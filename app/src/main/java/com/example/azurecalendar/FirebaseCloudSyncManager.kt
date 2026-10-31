@@ -1,9 +1,17 @@
 package com.example.azurecalendar
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.net.Uri
+import android.util.Base64
 import android.util.Log
 import android.widget.Toast
 import com.google.firebase.firestore.*
+import java.io.ByteArrayOutputStream
+import java.io.File
+import java.io.FileInputStream
+import java.io.FileOutputStream
 
 object FirebaseCloudSyncManager {
 
@@ -37,6 +45,102 @@ object FirebaseCloudSyncManager {
         val cleanA = unitA.replace("Unit", "", ignoreCase = true).trim()
         val cleanB = unitB.replace("Unit", "", ignoreCase = true).trim()
         return cleanA.equals(cleanB, ignoreCase = true)
+    }
+
+    /**
+     * Converts a local device Uri/file path into a compressed Base64 data URI
+     * so it can be stored directly inside Firestore and synced to all Agent phones.
+     */
+    fun prepareImageForCloud(context: Context?, rawImageUri: String): String {
+        if (rawImageUri.isBlank()) return ""
+        // Already a cloud URL or Base64 data URI
+        if (rawImageUri.startsWith("http", ignoreCase = true) ||
+            rawImageUri.startsWith("data:image", ignoreCase = true)
+        ) {
+            return rawImageUri
+        }
+        if (context == null) return rawImageUri
+
+        return try {
+            val inputStream = when {
+                rawImageUri.startsWith("content://") || rawImageUri.startsWith("file://") -> {
+                    context.contentResolver.openInputStream(Uri.parse(rawImageUri))
+                }
+                else -> {
+                    val file = File(rawImageUri)
+                    if (file.exists()) FileInputStream(file) else null
+                }
+            } ?: return rawImageUri
+
+            val originalBitmap = BitmapFactory.decodeStream(inputStream)
+            inputStream.close()
+            if (originalBitmap == null) return rawImageUri
+
+            // Scale down to max 600px on longest side so it easily fits inside Firestore's 1MB doc limit
+            val maxDim = 600
+            val width = originalBitmap.width
+            val height = originalBitmap.height
+            val scale = if (width > height && width > maxDim) {
+                maxDim.toFloat() / width
+            } else if (height >= width && height > maxDim) {
+                maxDim.toFloat() / height
+            } else {
+                1f
+            }
+
+            val resizedBitmap = if (scale < 1f) {
+                Bitmap.createScaledBitmap(
+                    originalBitmap,
+                    (width * scale).toInt().coerceAtLeast(1),
+                    (height * scale).toInt().coerceAtLeast(1),
+                    true
+                )
+            } else {
+                originalBitmap
+            }
+
+            val outputStream = ByteArrayOutputStream()
+            resizedBitmap.compress(Bitmap.CompressFormat.JPEG, 70, outputStream)
+            val byteArray = outputStream.toByteArray()
+            val base64Str = Base64.encodeToString(byteArray, Base64.NO_WRAP)
+            "data:image/jpeg;base64,$base64Str"
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to encode image for cloud: ${e.message}")
+            rawImageUri
+        }
+    }
+
+    /**
+     * Reconstructs a synced Base64 image from Firestore into a local cached .jpg file
+     * on the Agent's device so Coil/BitmapFactory can display it seamlessly.
+     */
+    private fun resolveCloudImageToLocalFile(context: Context, cleanUnit: String, cloudImageUri: String): String {
+        if (cloudImageUri.isBlank()) return ""
+        if (!cloudImageUri.startsWith("data:image", ignoreCase = true)) {
+            return cloudImageUri
+        }
+        return try {
+            val base64Part = cloudImageUri.substringAfter("base64,", "")
+            if (base64Part.isBlank()) return cloudImageUri
+
+            val bytes = Base64.decode(base64Part, Base64.DEFAULT)
+            val cacheDir = File(context.filesDir, "synced_unit_images")
+            if (!cacheDir.exists()) cacheDir.mkdirs()
+
+            // Use hashCode in filename so Coil automatically refreshes when the Owner changes the photo
+            val safeUnit = sanitizeDocId(cleanUnit)
+            val imageFile = File(cacheDir, "unit_${safeUnit}_${base64Part.hashCode()}.jpg")
+            if (!imageFile.exists()) {
+                FileOutputStream(imageFile).use { fos ->
+                    fos.write(bytes)
+                    fos.flush()
+                }
+            }
+            Uri.fromFile(imageFile).toString()
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to decode cloud image to local file: ${e.message}")
+            cloudImageUri
+        }
     }
 
     fun isEventDateExpired(dateStr: String, timeStr: String = "12:00 PM"): Boolean {
@@ -217,7 +321,7 @@ object FirebaseCloudSyncManager {
             db.collection("units").document(cleanUnit)
                 .set(unitData, SetOptions.merge())
                 .addOnSuccessListener {
-                    Log.d(TAG, "Unit $normalizedUnit status ->$status synced to units!")
+                    Log.d(TAG, "Unit $normalizedUnit status -> $status synced to units!")
                     notifyCloudUpdate()
                 }
                 .addOnFailureListener { e ->
@@ -240,7 +344,8 @@ object FirebaseCloudSyncManager {
         status: String,
         owner: String = "Owner",
         rate: Double = 2500.0,
-        imageUri: String = ""
+        imageUri: String = "",
+        context: Context? = null
     ) {
         try {
             val db = FirebaseFirestore.getInstance()
@@ -248,7 +353,10 @@ object FirebaseCloudSyncManager {
             if (cleanUnit.isBlank()) return
             val normalizedUnit = "Unit $cleanUnit"
 
-            val unitData = mapOf(
+            // Convert local device URI to portable Base64 string if needed
+            val cloudReadyImage = prepareImageForCloud(context, imageUri)
+
+            val unitData = mutableMapOf<String, Any>(
                 "unitNumber" to normalizedUnit,
                 "cleanUnitNumber" to cleanUnit,
                 "tower" to tower.ifBlank { "Azure Tower" },
@@ -256,9 +364,17 @@ object FirebaseCloudSyncManager {
                 "status" to status.ifBlank { "Available" },
                 "owner" to owner.ifBlank { "Owner" },
                 "rate" to rate,
-                "image_uri" to imageUri,
                 "updatedAt" to System.currentTimeMillis()
             )
+
+            // Only overwrite image_uri in Firestore if we actually have a valid cloud/base64 image
+            // This prevents an Agent device with empty "" from erasing the Owner's uploaded picture!
+            if (cloudReadyImage.isNotBlank() &&
+                (cloudReadyImage.startsWith("data:image", ignoreCase = true) ||
+                        cloudReadyImage.startsWith("http", ignoreCase = true))
+            ) {
+                unitData["image_uri"] = cloudReadyImage
+            }
 
             db.collection("units_catalog").document(cleanUnit).set(unitData, SetOptions.merge())
             db.collection("units_catalog").document(cleanUnit.uppercase()).set(unitData, SetOptions.merge())
@@ -302,8 +418,9 @@ object FirebaseCloudSyncManager {
 
     fun syncAllLocalUnitsToCloud(context: Context) {
         try {
-            val dbHelper = AzureDatabaseHelper(context.applicationContext)
-            val deletedPrefs = context.getSharedPreferences("azure_calendar_deleted_units", Context.MODE_PRIVATE)
+            val appContext = context.applicationContext
+            val dbHelper = AzureDatabaseHelper(appContext)
+            val deletedPrefs = appContext.getSharedPreferences("azure_calendar_deleted_units", Context.MODE_PRIVATE)
             val deletedSet = deletedPrefs.getStringSet("deleted_unit_numbers", emptySet()).orEmpty()
             val defaultUnits = listOf(
                 mapOf("unitNumber" to "Unit 12A", "tower" to "Tower 1", "status" to "Available", "owner" to "Owner A", "rate" to 2500.0, "image_uri" to "", "description" to "1 Bedroom"),
@@ -341,12 +458,13 @@ object FirebaseCloudSyncManager {
                     status = uStat,
                     owner = uOwn,
                     rate = uRate,
-                    imageUri = uImg
+                    imageUri = uImg,
+                    context = appContext
                 )
             }
 
-            syncAllLocalEventsToCloud(context)
-            syncAllLocalAgentsToCloud(context)
+            syncAllLocalEventsToCloud(appContext)
+            syncAllLocalAgentsToCloud(appContext)
         } catch (e: Exception) {
             Log.e(TAG, "Error syncing all local units: ${e.message}")
         }
@@ -522,7 +640,7 @@ object FirebaseCloudSyncManager {
                     onSyncTriggered()
                 }
 
-            // 3. Units Catalog Listener
+            // 3. Units Catalog Listener (Reconstructs Cloud Base64 Images to Local Files for Agent!)
             unitsCatalogListener?.remove()
             unitsCatalogListener = db.collection("units_catalog")
                 .addSnapshotListener { snapshots, e ->
@@ -537,6 +655,8 @@ object FirebaseCloudSyncManager {
                     val currentDeletedSet = deletedPrefs.getStringSet("deleted_unit_numbers", emptySet()).orEmpty().toMutableSet()
                     var deletedSetChanged = false
 
+                    val existingLocalUnits = dbHelper.getAllUnits()
+
                     for (doc in snapshots.documents) {
                         val uNumRaw = doc.getString("unitNumber") ?: doc.getString("cleanUnitNumber") ?: doc.id
                         val cleanNum = uNumRaw.replace("Unit", "", ignoreCase = true).trim()
@@ -545,14 +665,25 @@ object FirebaseCloudSyncManager {
                         val uStat = doc.getString("status") ?: "Available"
                         val uOwn = doc.getString("owner") ?: "Owner"
                         val uRate = doc.getDouble("rate") ?: 2500.0
-                        val uImg = doc.getString("image_uri") ?: ""
+                        val cloudImg = doc.getString("image_uri") ?: ""
                         val uDesc = doc.getString("description") ?: "1 Bedroom"
 
                         if (cleanNum.isNotBlank()) {
                             val upperClean = cleanNum.uppercase()
                             cloudCleanNumbers.add(upperClean)
                             cloudCleanNumbers.add(cleanNum)
-                            dbHelper.insertUnit(uNum, uTow, uStat, uOwn, uRate, uImg, uDesc, syncToCloud = false)
+
+                            // Convert Base64 cloud image to a local file URI on the Agent's device
+                            val resolvedImg = if (cloudImg.isNotBlank()) {
+                                resolveCloudImageToLocalFile(appContext, cleanNum, cloudImg)
+                            } else {
+                                // Preserve existing local image if cloud doc didn't have one yet
+                                existingLocalUnits.find {
+                                    isSameUnit(it["unitNumber"]?.toString() ?: "", cleanNum)
+                                }?.get("image_uri")?.toString() ?: ""
+                            }
+
+                            dbHelper.insertUnit(uNum, uTow, uStat, uOwn, uRate, resolvedImg, uDesc, syncToCloud = false)
                             dbHelper.updateUnitStatus(uNum, uStat, syncToCloud = false)
                             dbHelper.updateUnitStatus(cleanNum, uStat, syncToCloud = false)
 

@@ -24,7 +24,6 @@ import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -48,6 +47,13 @@ private val CardBg = Color(0xFFFFFFFF)
 private val TextDark = Color(0xFF2C1A36)
 private val TextMuted = Color(0xFF8C73A6)
 private val BorderPurple = Color(0xFFE2D6F5)
+
+// Helper function to safely match unit names across different formats (e.g. "12A" vs "Unit 12A")
+private fun isSameUnitLocal(unitA: String, unitB: String): Boolean {
+    val cleanA = unitA.replace("Unit", "", ignoreCase = true).trim()
+    val cleanB = unitB.replace("Unit", "", ignoreCase = true).trim()
+    return cleanA.equals(cleanB, ignoreCase = true)
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -344,7 +350,6 @@ fun AddEditUnitScreen(
         Spacer(modifier = Modifier.height(12.dp))
 
         // Save Changes / Add Unit Button
-        // Replace your Save Changes / Add Unit Button onClick in AddEditUnitScreen.kt:
         Button(
             onClick = {
                 if (unitNumber.isBlank() || buildingName.isBlank()) {
@@ -368,11 +373,11 @@ fun AddEditUnitScreen(
 
                     val deletedPrefs = context.getSharedPreferences("azure_calendar_deleted_units", android.content.Context.MODE_PRIVATE)
                     val currentDeletedSet = deletedPrefs.getStringSet("deleted_unit_numbers", emptySet()).orEmpty().toMutableSet()
-                    if (currentDeletedSet.removeAll { isSameUnit(it, cleanNew) || isSameUnit(it, formattedUnitNumber) }) {
+                    if (currentDeletedSet.removeAll { isSameUnitLocal(it, cleanNew) || isSameUnitLocal(it, formattedUnitNumber) }) {
                         deletedPrefs.edit().putStringSet("deleted_unit_numbers", currentDeletedSet).apply()
                     }
 
-                    // 1. Save locally in SQLite
+                    // 1. Save locally in SQLite (which automatically triggers pushFullUnitToCloud with context)
                     dbHelper.insertUnit(
                         unitNumber = formattedUnitNumber,
                         tower = buildingName.ifBlank { "Azure Tower" },
@@ -383,7 +388,7 @@ fun AddEditUnitScreen(
                         description = selectedBrType.ifBlank { "1 Bedroom" }
                     )
 
-                    // 2. Push to Cloud Firebase
+                    // 2. Explicitly push to Cloud Firebase with context so image converts properly
                     FirebaseCloudSyncManager.pushFullUnitToCloud(
                         unitNumber = formattedUnitNumber,
                         tower = buildingName.ifBlank { "Azure Tower" },
@@ -391,7 +396,8 @@ fun AddEditUnitScreen(
                         status = selectedStatus.ifBlank { "Available" },
                         owner = "Owner",
                         rate = rateVal,
-                        imageUri = imgUriStr
+                        imageUri = imgUriStr,
+                        context = context
                     )
 
                     if (selectedStatus.contains("Available", ignoreCase = true) || selectedStatus.contains("Maintenance", ignoreCase = true)) {
@@ -454,7 +460,7 @@ fun AddEditUnitScreen(
                             // 1. Delete locally from SQLite
                             dbHelper.deleteUnit(formattedUnitNumber)
 
-                            // 2. FIX: Delete from Firebase cloud so agents instantly purge it too!
+                            // 2. Delete from Firebase cloud so agents instantly purge it too!
                             FirebaseCloudSyncManager.deleteUnitFromCloud(context, formattedUnitNumber)
 
                             val deletedPrefs = context.getSharedPreferences("azure_calendar_deleted_units", android.content.Context.MODE_PRIVATE)

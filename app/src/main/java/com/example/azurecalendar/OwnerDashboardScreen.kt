@@ -148,7 +148,7 @@ private fun OwnerCalendarTabContent(
 
     // Load events from SQLite database in real-time
     val calendarDays = remember(activeMonthName, activeYearNumber, currentSubScreen, refreshTrigger, dbEventsState.value) {
-        createSampleCalendarMonth("Admin").map { day ->
+        createSampleCalendarMonth(activeMonthName, activeYearNumber, "Admin").map { day ->
             val dbEvents = dbEventsState.value.filter { evt ->
                 val evtDate = evt["date"] ?: ""
                 val shortM = activeMonthName.take(3)
@@ -266,13 +266,14 @@ private fun OwnerCalendarTabContent(
                     if (evtId != null) {
                         dbHelper.deleteEvent(evtId)
                     }
-                    val targetDate = "Sept $selectedDayNumber, 2026"
+                    val shortM = activeMonthName.take(3)
+                    val targetDate = "$shortM $selectedDayNumber, $activeYearNumber"
                     dbHelper.deleteEventByDateAndUnit(targetDate, unitForDisplay)
                     FirebaseCloudSyncManager.deleteEventFromCloud(targetDate, unitForDisplay)
                     FirebaseCloudSyncManager.pushUnitStatusToCloud(unitForDisplay, "Available")
                     refreshTrigger++
                     currentSubScreen = "calendar"
-                    Toast.makeText(context, "Tag & booking deleted for Sept $selectedDayNumber!", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, "Tag & booking deleted for $shortM $selectedDayNumber!", Toast.LENGTH_SHORT).show()
                 }
             )
         }
