@@ -293,11 +293,11 @@ fun AzureCalendarView(
                         val taggedShapeResList = dayModel.events.mapNotNull { evt ->
                             val shapeName = evt.description
                             when {
-                                shapeName.isBlank() || shapeName.contains("Available", ignoreCase = true) || shapeName.contains("Four", ignoreCase = true) -> null
                                 shapeName.contains("Not", ignoreCase = true) || shapeName.contains("Star", ignoreCase = true) -> R.drawable.star
                                 shapeName.contains("Heart", ignoreCase = true) || shapeName.contains("Check", ignoreCase = true) -> R.drawable.heart
                                 shapeName.contains("Diamond", ignoreCase = true) || shapeName.contains("Reserve", ignoreCase = true) -> R.drawable.diamond
                                 shapeName.contains("Circle", ignoreCase = true) || shapeName.contains("Maintenance", ignoreCase = true) -> R.drawable.circle
+                                shapeName.isBlank() || shapeName.contains("Available", ignoreCase = true) || shapeName.contains("Four", ignoreCase = true) -> null
                                 else -> null
                             }
                         }.take(4)
@@ -470,11 +470,11 @@ fun AzureCalendarView(
                             val taggedShapeResList = dayModel.events.mapNotNull { evt ->
                                 val shapeName = evt.description
                                 when {
-                                    shapeName.isBlank() || shapeName.contains("Available", ignoreCase = true) || shapeName.contains("Four", ignoreCase = true) -> null
                                     shapeName.contains("Not", ignoreCase = true) || shapeName.contains("Star", ignoreCase = true) -> R.drawable.star
                                     shapeName.contains("Heart", ignoreCase = true) || shapeName.contains("Check", ignoreCase = true) -> R.drawable.heart
                                     shapeName.contains("Diamond", ignoreCase = true) || shapeName.contains("Reserve", ignoreCase = true) || shapeName.contains("Extend", ignoreCase = true) -> R.drawable.diamond
                                     shapeName.contains("Circle", ignoreCase = true) || shapeName.contains("Maintenance", ignoreCase = true) -> R.drawable.circle
+                                    shapeName.isBlank() || shapeName.contains("Available", ignoreCase = true) || shapeName.contains("Four", ignoreCase = true) -> null
                                     else -> null
                                 }
                             }.distinct().take(4)

@@ -1,5 +1,6 @@
 package com.example.azurecalendar
 
+import android.widget.Toast
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -270,36 +271,61 @@ fun BookingDetailsScreen(
             }
         }
 
+        val currentLoggedUser = remember { sessionManager.getUsername() }
+        val canUserEditBooking = remember(bookingAgentName, currentLoggedUser) {
+            UserSessionManager.isSameCreator(bookingAgentName, currentLoggedUser)
+        }
+
         // Action Buttons Row (Edit Category Tag & Delete Booking)
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             Button(
-                onClick = onEditTagClick,
+                onClick = {
+                    if (canUserEditBooking) {
+                        onEditTagClick()
+                    } else {
+                        Toast.makeText(context, "Permission Denied: Only $bookingAgentName can edit or modify this booking.", Toast.LENGTH_LONG).show()
+                    }
+                },
                 shape = RoundedCornerShape(14.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = PurplePrimary),
+                colors = ButtonDefaults.buttonColors(containerColor = if (canUserEditBooking) PurplePrimary else Color.Gray),
                 modifier = Modifier
                     .weight(1f)
                     .height(48.dp)
             ) {
-                Icon(Icons.Default.Edit, contentDescription = "Edit Tag", modifier = Modifier.size(18.dp))
+                Icon(
+                    imageVector = if (canUserEditBooking) Icons.Default.Edit else Icons.Default.Lock,
+                    contentDescription = "Edit Tag",
+                    modifier = Modifier.size(18.dp)
+                )
                 Spacer(modifier = Modifier.width(6.dp))
-                Text("Edit Tag", fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                Text(if (canUserEditBooking) "Edit Tag" else "Locked", fontSize = 14.sp, fontWeight = FontWeight.Bold)
             }
 
             OutlinedButton(
-                onClick = onDeleteBookingClick,
+                onClick = {
+                    if (canUserEditBooking) {
+                        onDeleteBookingClick()
+                    } else {
+                        Toast.makeText(context, "Permission Denied: Only $bookingAgentName can delete this booking.", Toast.LENGTH_LONG).show()
+                    }
+                },
                 shape = RoundedCornerShape(14.dp),
-                border = BorderStroke(1.dp, Color(0xFFE53935)),
-                colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFE53935)),
+                border = BorderStroke(1.dp, if (canUserEditBooking) Color(0xFFE53935) else Color.Gray),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = if (canUserEditBooking) Color(0xFFE53935) else Color.Gray),
                 modifier = Modifier
                     .weight(1f)
                     .height(48.dp)
             ) {
-                Icon(Icons.Default.Delete, contentDescription = "Delete", modifier = Modifier.size(18.dp))
+                Icon(
+                    imageVector = if (canUserEditBooking) Icons.Default.Delete else Icons.Default.Lock,
+                    contentDescription = "Delete",
+                    modifier = Modifier.size(18.dp)
+                )
                 Spacer(modifier = Modifier.width(6.dp))
-                Text("Delete", fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                Text(if (canUserEditBooking) "Delete" else "Locked", fontSize = 14.sp, fontWeight = FontWeight.Bold)
             }
         }
 

@@ -44,6 +44,7 @@ fun UnitDetailsScreen(
     unitName: String = "Unit 12A",
     towerName: String = "Azure Tower",
     unitStatus: String = "Available",
+    description: String = "1 Bedroom",
     imageUri: String? = null,
     imageResId: Int = R.drawable.background,
     initialCheckInDay: Int = 11,
@@ -57,9 +58,12 @@ fun UnitDetailsScreen(
     @Suppress("UNUSED_PARAMETER") onTabSelected: (Int) -> Unit = {}
 ) {
     val context = LocalContext.current
+    val sessionMgr = remember { UserSessionManager(context) }
+    val currentLoggedUser = remember { sessionMgr.getUsername() }
     val syncTrigger = FirebaseCloudSyncManager.globalCloudSyncTrigger.intValue
     var currentStatus by remember(unitStatus, syncTrigger) { mutableStateOf(unitStatus) }
     var currentEventDate by remember { mutableStateOf("") }
+    var currentEventAgent by remember { mutableStateOf("") }
 
     var showBreachContractDialog by remember { mutableStateOf(false) }
     var showDateRangePicker by remember { mutableStateOf(false) }
@@ -95,6 +99,7 @@ fun UnitDetailsScreen(
 
         if (matchingEvent != null) {
             currentEventDate = matchingEvent["date"] ?: ""
+            currentEventAgent = matchingEvent["agent"] ?: ""
             val shape = matchingEvent["shape"] ?: ""
             val title = matchingEvent["title"] ?: ""
             val combined = "$shape $title"
@@ -107,6 +112,7 @@ fun UnitDetailsScreen(
             }
         } else {
             currentEventDate = ""
+            currentEventAgent = ""
             val match = dbHelper.getAllUnits().find {
                 val uNum = it["unitNumber"]?.toString() ?: ""
                 isSameUnit(uNum, unitName)
@@ -261,7 +267,7 @@ fun UnitDetailsScreen(
                 )
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
-                    text = "$towerName  |  1 Bedroom",
+                    text = "$towerName  |  ${description.ifBlank { "1 Bedroom" }}",
                     fontSize = 14.sp,
                     color = TextMuted,
                     fontWeight = FontWeight.Medium
@@ -323,15 +329,17 @@ fun UnitDetailsScreen(
                         )
                         Spacer(modifier = Modifier.width(12.dp))
                         Column {
-                            Text(text = "Bed", fontSize = 12.sp, color = TextMuted)
-                            Text(text = "1 Bed", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = TextDark)
+                            Text(text = "Bed / Bedroom Type", fontSize = 12.sp, color = TextMuted)
+                            Text(text = description.ifBlank { "1 Bedroom" }, fontSize = 14.sp, fontWeight = FontWeight.Bold, color = TextDark)
                         }
                     }
                 }
             }
         }
 
-        // Tag Date Coverage Info Card (Displays explicit Check-in Date and Check-out Date)
+        val isAvailableForCoverage = currentStatus.equals("Available", ignoreCase = true) && currentEventDate.isBlank()
+
+        // Tag Date Coverage Info Card (Displays Check-in/Check-out ONLY for existing active bookings)
         val (inDateStr, outDateStr) = remember(currentEventDate, activeCheckIn, activeMonth, activeYear) {
             if (currentEventDate.isNotBlank() && (currentEventDate.contains("-") || currentEventDate.contains("to", ignoreCase = true))) {
                 val parts = currentEventDate.split("-", "to", ignoreCase = true)
@@ -366,91 +374,92 @@ fun UnitDetailsScreen(
 
         val fullCoverageRange = if (inDateStr == outDateStr) inDateStr else "$inDateStr - $outDateStr"
 
-        Card(
-            shape = RoundedCornerShape(20.dp),
-            colors = CardDefaults.cardColors(containerColor = Color(0xFFF8F5FE)),
-            border = BorderStroke(1.dp, Color(0xFFE2D6F5)),
-            modifier = Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(20.dp))
-                .clickable { onEditTagClick(fullCoverageRange) }
-        ) {
-            Column(
+        if (!isAvailableForCoverage) {
+            Card(
+                shape = RoundedCornerShape(20.dp),
+                colors = CardDefaults.cardColors(containerColor = Color(0xFFF8F5FE)),
+                border = BorderStroke(1.dp, Color(0xFFE2D6F5)),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(14.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
+                    .clip(RoundedCornerShape(20.dp))
             ) {
-                Text(
-                    text = "Tag Date Coverage",
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.Medium,
-                    color = TextMuted
-                )
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    // Check-in Date Box
-                    Surface(
-                        shape = RoundedCornerShape(12.dp),
-                        color = Color(0xFFF3EDFD),
-                        modifier = Modifier.weight(1f)
+                    Text(
+                        text = "Tag Date Coverage",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = TextMuted
+                    )
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        // Check-in Date Box
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = Color(0xFFF3EDFD),
+                            modifier = Modifier.weight(1f)
                         ) {
-                            Icon(
-                                imageVector = Icons.Default.DateRange,
-                                contentDescription = "Check-in",
-                                tint = PurplePrimary,
-                                modifier = Modifier.size(18.dp)
-                            )
-                            Column {
-                                Text(text = "Check-in Date", fontSize = 10.sp, color = TextMuted)
-                                Text(
-                                    text = inDateStr,
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = TextDark
+                            Row(
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.DateRange,
+                                    contentDescription = "Check-in",
+                                    tint = PurplePrimary,
+                                    modifier = Modifier.size(18.dp)
                                 )
+                                Column {
+                                    Text(text = "Check-in Date", fontSize = 10.sp, color = TextMuted)
+                                    Text(
+                                        text = inDateStr,
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = TextDark
+                                    )
+                                }
                             }
                         }
-                    }
 
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(text = "➞", fontSize = 16.sp, color = PurplePrimary, fontWeight = FontWeight.Bold)
-                    Spacer(modifier = Modifier.width(6.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(text = "➞", fontSize = 16.sp, color = PurplePrimary, fontWeight = FontWeight.Bold)
+                        Spacer(modifier = Modifier.width(6.dp))
 
-                    // Check-out Date Box
-                    Surface(
-                        shape = RoundedCornerShape(12.dp),
-                        color = Color(0xFFF3EDFD),
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        // Check-out Date Box
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = Color(0xFFF3EDFD),
+                            modifier = Modifier.weight(1f)
                         ) {
-                            Icon(
-                                imageVector = Icons.Default.DateRange,
-                                contentDescription = "Check-out",
-                                tint = PurplePrimary,
-                                modifier = Modifier.size(18.dp)
-                            )
-                            Column {
-                                Text(text = "Check-out Date", fontSize = 10.sp, color = TextMuted)
-                                Text(
-                                    text = outDateStr,
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = TextDark
+                            Row(
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.DateRange,
+                                    contentDescription = "Check-out",
+                                    tint = PurplePrimary,
+                                    modifier = Modifier.size(18.dp)
                                 )
+                                Column {
+                                    Text(text = "Check-out Date", fontSize = 10.sp, color = TextMuted)
+                                    Text(
+                                        text = outDateStr,
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = TextDark
+                                    )
+                                }
                             }
                         }
                     }
@@ -485,53 +494,125 @@ fun UnitDetailsScreen(
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             if (isCheckedInUnit) {
+                val canUserExtend = remember(currentEventAgent, currentLoggedUser) {
+                    UserSessionManager.isSameCreator(currentEventAgent, currentLoggedUser)
+                }
+
                 OutlinedButton(
-                    onClick = { showExtendStayDialog = true },
+                    onClick = {
+                        if (canUserExtend) {
+                            showExtendStayDialog = true
+                        } else {
+                            Toast.makeText(
+                                context,
+                                "Permission Denied: Only the creator of this booking ($currentEventAgent) can extend the stay.",
+                                Toast.LENGTH_LONG
+                            ).show()
+                        }
+                    },
                     shape = RoundedCornerShape(16.dp),
-                    border = BorderStroke(1.5.dp, PurplePrimary),
-                    colors = ButtonDefaults.outlinedButtonColors(contentColor = PurplePrimary),
+                    border = BorderStroke(1.5.dp, if (canUserExtend) PurplePrimary else Color.Gray),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = if (canUserExtend) PurplePrimary else Color.Gray),
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(48.dp)
                 ) {
-                    Icon(Icons.Default.MoreTime, contentDescription = "Extend Stay", modifier = Modifier.size(18.dp))
+                    Icon(
+                        imageVector = if (canUserExtend) Icons.Default.MoreTime else Icons.Default.Lock,
+                        contentDescription = "Extend Stay",
+                        modifier = Modifier.size(18.dp)
+                    )
                     Spacer(modifier = Modifier.width(6.dp))
-                    Text("Extend Stay", fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                    Text(
+                        text = if (canUserExtend) "Extend Stay" else "Extend Stay (Locked)",
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Bold
+                    )
                 }
             }
 
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                OutlinedButton(
-                    onClick = { onEditTagClick(fullCoverageRange) },
-                    shape = RoundedCornerShape(16.dp),
-                    border = BorderStroke(1.5.dp, PurplePrimary),
-                    colors = ButtonDefaults.outlinedButtonColors(contentColor = PurplePrimary),
-                    modifier = Modifier
-                        .weight(1f)
-                        .height(48.dp)
-                ) {
-                    Icon(Icons.Default.Edit, contentDescription = "Edit Tag", modifier = Modifier.size(18.dp))
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text("Edit Tag", fontSize = 14.sp, fontWeight = FontWeight.Bold)
-                }
-
+            if (isAvailableForCoverage) {
                 Button(
                     onClick = { onBookNowClick(fullCoverageRange) },
                     shape = RoundedCornerShape(16.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = PurplePrimary),
                     modifier = Modifier
-                        .weight(1.2f)
+                        .fillMaxWidth()
                         .height(48.dp)
                 ) {
+                    Icon(Icons.Default.BookmarkAdd, contentDescription = "Book Now", modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
                     Text(
                         text = "Book Now",
                         fontSize = 14.sp,
                         fontWeight = FontWeight.Bold,
                         color = Color.White
                     )
+                }
+            } else {
+                val canUserEditTag = remember(currentEventAgent, currentLoggedUser) {
+                    UserSessionManager.isSameCreator(currentEventAgent, currentLoggedUser)
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    OutlinedButton(
+                        onClick = {
+                            if (canUserEditTag) {
+                                onEditTagClick(fullCoverageRange)
+                            } else {
+                                Toast.makeText(
+                                    context,
+                                    "Permission Denied: Only the creator ($currentEventAgent) can edit or modify tags for this booking.",
+                                    Toast.LENGTH_LONG
+                                ).show()
+                            }
+                        },
+                        shape = RoundedCornerShape(16.dp),
+                        border = BorderStroke(1.5.dp, if (canUserEditTag) PurplePrimary else Color.Gray),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = if (canUserEditTag) PurplePrimary else Color.Gray),
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(48.dp)
+                    ) {
+                        Icon(
+                            imageVector = if (canUserEditTag) Icons.Default.Edit else Icons.Default.Lock,
+                            contentDescription = "Edit Tag",
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = if (canUserEditTag) "Edit Tag" else "Locked",
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+
+                    Button(
+                        onClick = {
+                            Toast.makeText(context, "Booking is blocked! This unit is already $currentStatus for these dates.", Toast.LENGTH_SHORT).show()
+                        },
+                        enabled = false,
+                        shape = RoundedCornerShape(16.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = Color(0xFFE0E0E0),
+                            disabledContainerColor = Color(0xFFEEEEEE),
+                            disabledContentColor = Color(0xFF9E9E9E)
+                        ),
+                        modifier = Modifier
+                            .weight(1.2f)
+                            .height(48.dp)
+                    ) {
+                        Icon(Icons.Default.Lock, contentDescription = "Blocked", modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            text = "Blocked",
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
                 }
             }
         }
@@ -682,16 +763,22 @@ fun UnitDetailsScreen(
             confirmButton = {
                 Button(
                     onClick = {
+                        if (!UserSessionManager.isSameCreator(currentEventAgent, currentLoggedUser)) {
+                            Toast.makeText(context, "Permission Denied: Only $currentEventAgent can extend this stay.", Toast.LENGTH_LONG).show()
+                            showExtendStayDialog = false
+                            return@Button
+                        }
+
                         val newTargetDate = "$shortM $checkInDay - ${calcResult.first}"
                         val newTime = calcResult.second
-                        val agentRole = if (isOwnerMode) "Admin" else "Agent"
+                        val creatorToSave = currentEventAgent.ifBlank { currentLoggedUser.ifBlank { if (isOwnerMode) "Admin Owner" else "Agent" } }
 
                         dbHelper.deleteEventByDateAndUnit(newTargetDate, unitName)
                         dbHelper.insertEvent(
                             title = "Staycation - Extend Stay",
                             date = newTargetDate,
                             time = newTime,
-                            agent = agentRole,
+                            agent = creatorToSave,
                             unit = unitName,
                             shape = "Extend Stay",
                             color = 0xFF9C27B0.toLong()
@@ -704,7 +791,7 @@ fun UnitDetailsScreen(
                                 "title" to "Staycation - Extend Stay",
                                 "date" to newTargetDate,
                                 "time" to newTime,
-                                "agent" to agentRole,
+                                "agent" to creatorToSave,
                                 "unit" to unitName,
                                 "shape" to "Extend Stay",
                                 "color" to 0xFF9C27B0.toLong().toString()

@@ -623,8 +623,6 @@ object FirebaseCloudSyncManager {
                                             color = colorLong,
                                             syncToCloud = false
                                         )
-                                        dbHelper.updateUnitStatus(normalizedUnit, shape, syncToCloud = false)
-                                        dbHelper.updateUnitStatus(cleanUnit, shape, syncToCloud = false)
                                     }
                                 }
                             }
@@ -715,16 +713,6 @@ object FirebaseCloudSyncManager {
 
                     if (deletedSetChanged) {
                         deletedPrefs.edit().putStringSet("deleted_unit_numbers", currentDeletedSet).apply()
-                    }
-
-                    val activeEvents = dbHelper.getAllEvents()
-                    for (evt in activeEvents) {
-                        val evtUnit = evt["unit"] ?: ""
-                        val evtShape = evt["shape"] ?: ""
-                        val evtDate = evt["date"] ?: ""
-                        if (evtUnit.isNotBlank() && evtShape.isNotBlank() && !isEventDateExpired(evtDate)) {
-                            dbHelper.updateUnitStatus(evtUnit, evtShape, syncToCloud = false)
-                        }
                     }
 
                     if (cloudCleanNumbers.isNotEmpty()) {

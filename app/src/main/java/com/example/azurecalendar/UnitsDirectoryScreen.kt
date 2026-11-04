@@ -48,8 +48,15 @@ private val TextDark = Color(0xFF2C1A36)
 private val TextMuted = Color(0xFF7B6287)
 private val BorderPurple = Color(0xFFE0D0EC)
 
-fun isDateCoveredByEvent(evtDate: String, dayNumber: Int, currentMonthName: String = ""): Boolean {
+fun isDateCoveredByEvent(evtDate: String, dayNumber: Int, currentMonthName: String = "", currentYearNumber: Int = 0): Boolean {
     if (evtDate.isBlank()) return false
+
+    if (currentYearNumber > 2000) {
+        val evtYear = Regex("\\b20\\d{2}\\b").find(evtDate)?.value?.toIntOrNull()
+        if (evtYear != null && evtYear != currentYearNumber) {
+            return false
+        }
+    }
 
     val monthMap = mapOf(
         "jan" to 1, "feb" to 2, "mar" to 3, "apr" to 4, "may" to 5, "jun" to 6,
@@ -130,7 +137,10 @@ fun UnitsDirectoryScreen(
     onEditUnitClick: (unitNumber: String, tower: String, description: String, status: String, imageUri: String) -> Unit = { _, _, _, _, _ -> },
     isOwnerMode: Boolean = false,
     initialDayNumber: Int = 11,
-    onDateChange: (Int) -> Unit = {}
+    initialMonthIndex: Int = -1,
+    initialYearNumber: Int = -1,
+    onDateChange: (Int) -> Unit = {},
+    onFullDateChange: (day: Int, monthIndex: Int, year: Int) -> Unit = { _, _, _ -> }
 ) {
     val context = LocalContext.current
     val dbHelper = remember { AzureDatabaseHelper(context) }
@@ -141,8 +151,13 @@ fun UnitsDirectoryScreen(
     val currentRealMonthIdx = realTimeCal.get(java.util.Calendar.MONTH)
 
     var selectedDayNumber by remember(initialDayNumber) { mutableIntStateOf(if (initialDayNumber == 11) currentRealDay else initialDayNumber) }
-    var selectedMonthIndex by remember { mutableIntStateOf(currentRealMonthIdx) }
-    var selectedYearNumber by remember { mutableIntStateOf(currentRealYear) }
+    var selectedMonthIndex by remember(initialMonthIndex) { mutableIntStateOf(if (initialMonthIndex in 0..11) initialMonthIndex else currentRealMonthIdx) }
+    var selectedYearNumber by remember(initialYearNumber) { mutableIntStateOf(if (initialYearNumber > 2020) initialYearNumber else currentRealYear) }
+
+    val emitDateChange = { day: Int, month: Int, year: Int ->
+        onDateChange(day)
+        onFullDateChange(day, month, year)
+    }
 
     val monthsList = remember {
         listOf(
@@ -210,7 +225,7 @@ fun UnitsDirectoryScreen(
                 val evtYear = Regex("\\b20\\d{2}\\b").find(evtDate)?.value?.toIntOrNull()
                 val yearMatches = evtYear == null || evtYear == selectedYearNumber
 
-                val dateMatches = isDateCoveredByEvent(evtDate, selectedDayNumber, shortMonthName)
+                val dateMatches = isDateCoveredByEvent(evtDate, selectedDayNumber, shortMonthName, selectedYearNumber)
                 val unitMatches = isSameUnit(evtUnit, unitItem.unitNumber)
                 yearMatches && dateMatches && unitMatches
             }
@@ -219,16 +234,16 @@ fun UnitsDirectoryScreen(
                 matchingEvent != null -> {
                     val shape = matchingEvent["shape"] ?: ""
                     val title = matchingEvent["title"] ?: ""
-                    val combined = "$shape$title"
+                    val combined = "$shape $title"
                     when {
                         combined.contains("Check", ignoreCase = true) || combined.contains("Heart", ignoreCase = true) -> "Check-in"
                         combined.contains("Reserve", ignoreCase = true) || combined.contains("Diamond", ignoreCase = true) -> "Reserved"
                         combined.contains("Maintenance", ignoreCase = true) || combined.contains("Circle", ignoreCase = true) -> "Under Maintenance"
                         combined.contains("Not", ignoreCase = true) || combined.contains("Star", ignoreCase = true) -> "Not Available"
-                        else -> shape.ifBlank { "Available" }
+                        else -> shape.ifBlank { unitItem.status.ifBlank { "Available" } }
                     }
                 }
-                else -> "Available"
+                else -> unitItem.status.ifBlank { "Available" }
             }
 
             unitItem.copy(status = dynamicStatus)
@@ -270,86 +285,34 @@ fun UnitsDirectoryScreen(
                     color = TextDark
                 )
 
-                val maxDaysInSelectedMonth = remember(selectedMonthIndex, selectedYearNumber) {
-                    val cal = java.util.Calendar.getInstance().apply {
-                        clear()
-                        set(java.util.Calendar.YEAR, selectedYearNumber)
-                        set(java.util.Calendar.MONTH, selectedMonthIndex)
-                        set(java.util.Calendar.DAY_OF_MONTH, 1)
-                    }
-                    cal.getActualMaximum(java.util.Calendar.DAY_OF_MONTH)
-                }
-
                 Surface(
                     shape = RoundedCornerShape(16.dp),
                     color = Color(0xFFF3EDFD)
                 ) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
+                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
-                        IconButton(
-                            onClick = {
-                                if (selectedDayNumber > 1) {
-                                    selectedDayNumber--
-                                } else {
-                                    if (selectedMonthIndex > 0) {
-                                        selectedMonthIndex--
-                                    } else {
-                                        selectedMonthIndex = 11
-                                        selectedYearNumber--
-                                    }
-                                    val cal = java.util.Calendar.getInstance().apply {
-                                        clear()
-                                        set(java.util.Calendar.YEAR, selectedYearNumber)
-                                        set(java.util.Calendar.MONTH, selectedMonthIndex)
-                                        set(java.util.Calendar.DAY_OF_MONTH, 1)
-                                    }
-                                    selectedDayNumber = cal.getActualMaximum(java.util.Calendar.DAY_OF_MONTH)
-                                }
-                                onDateChange(selectedDayNumber)
-                            },
-                            modifier = Modifier.size(32.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.AutoMirrored.Filled.KeyboardArrowLeft,
-                                contentDescription = "Prev",
-                                tint = PurplePrimary
-                            )
-                        }
-
-                        Text(
-                            text = "$shortMonthName $selectedDayNumber, $selectedYearNumber",
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = TextDark,
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
                             modifier = Modifier
-                                .clip(RoundedCornerShape(8.dp))
+                                .clip(RoundedCornerShape(10.dp))
                                 .clickable { showDatePickerDialog = true }
-                                .padding(horizontal = 6.dp, vertical = 2.dp)
-                        )
-
-                        IconButton(
-                            onClick = {
-                                if (selectedDayNumber < maxDaysInSelectedMonth) {
-                                    selectedDayNumber++
-                                } else {
-                                    selectedDayNumber = 1
-                                    if (selectedMonthIndex < 11) {
-                                        selectedMonthIndex++
-                                    } else {
-                                        selectedMonthIndex = 0
-                                        selectedYearNumber++
-                                    }
-                                }
-                                onDateChange(selectedDayNumber)
-                            },
-                            modifier = Modifier.size(32.dp)
+                                .padding(horizontal = 10.dp, vertical = 6.dp),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
                             Icon(
-                                imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                                contentDescription = "Next",
-                                tint = PurplePrimary
+                                imageVector = Icons.Default.CalendarMonth,
+                                contentDescription = "Select Date",
+                                tint = PurplePrimary,
+                                modifier = Modifier.size(14.dp)
+                            )
+                            Text(
+                                text = "$shortMonthName $selectedDayNumber, $selectedYearNumber",
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = TextDark
                             )
                         }
 
@@ -363,11 +326,11 @@ fun UnitsDirectoryScreen(
                                     selectedDayNumber = realCal.get(java.util.Calendar.DAY_OF_MONTH)
                                     selectedMonthIndex = realCal.get(java.util.Calendar.MONTH)
                                     selectedYearNumber = realCal.get(java.util.Calendar.YEAR)
-                                    onDateChange(selectedDayNumber)
+                                    emitDateChange(selectedDayNumber, selectedMonthIndex, selectedYearNumber)
                                 }
                         ) {
                             Row(
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(4.dp)
                             ) {
@@ -726,7 +689,7 @@ fun UnitsDirectoryScreen(
                                             selectedDayNumber = dayNum
                                             selectedMonthIndex = pickerMonthIndex
                                             selectedYearNumber = pickerYear
-                                            onDateChange(dayNum)
+                                            emitDateChange(dayNum, pickerMonthIndex, pickerYear)
                                             showDatePickerDialog = false
                                         }
                                 ) {
