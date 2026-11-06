@@ -1,5 +1,6 @@
 package com.example.azurecalendar
 
+import android.content.Context
 import android.widget.Toast
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -15,6 +16,7 @@ import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -44,6 +46,8 @@ fun AgentsListScreen(
     val context = LocalContext.current
     val isPreview = LocalInspectionMode.current
     var searchQuery by remember { mutableStateOf("") }
+    var agentToDelete by remember { mutableStateOf<Map<String, String>?>(null) }
+    val deletedPrefs = remember { context.getSharedPreferences("azure_calendar_deleted_agents", Context.MODE_PRIVATE) }
 
     val registeredAgents = remember {
         mutableStateOf<List<Map<String, String>>>(emptyList())
@@ -52,7 +56,12 @@ fun AgentsListScreen(
     LaunchedEffect(Unit, FirebaseCloudSyncManager.globalCloudSyncTrigger.intValue) {
         try {
             val dbHelper = AzureDatabaseHelper(context)
-            val localList = dbHelper.getAllAgents()
+            val deletedSet = deletedPrefs.getStringSet("deleted_agent_keys", emptySet()).orEmpty()
+            val localList = dbHelper.getAllAgents().filter { agent ->
+                val name = (agent["name"] ?: "").trim().lowercase()
+                val email = (agent["email"] ?: "").trim().lowercase()
+                name !in deletedSet && email !in deletedSet
+            }
             registeredAgents.value = localList.distinctBy {
                 it["email"]?.lowercase()?.ifBlank { it["name"]?.lowercase() }
             }
@@ -60,6 +69,7 @@ fun AgentsListScreen(
             com.google.firebase.firestore.FirebaseFirestore.getInstance().collection("agents")
                 .get()
                 .addOnSuccessListener { query ->
+                    val deletedSetCloud = deletedPrefs.getStringSet("deleted_agent_keys", emptySet()).orEmpty()
                     for (doc in query.documents) {
                         val aName = doc.getString("name") ?: ""
                         val aEmail = doc.getString("email") ?: ""
@@ -67,11 +77,18 @@ fun AgentsListScreen(
                         val aRole = doc.getString("role") ?: "Property Agent"
                         val aGender = doc.getString("gender") ?: "Female"
 
-                        if (aName.isNotBlank() && aEmail.isNotBlank()) {
+                        val isDeleted = deletedSetCloud.contains(aEmail.trim().lowercase()) ||
+                                        deletedSetCloud.contains(aName.trim().lowercase())
+
+                        if (aName.isNotBlank() && aEmail.isNotBlank() && !isDeleted) {
                             dbHelper.insertAgent(aName, aEmail, aPhone, aRole, aGender, syncToCloud = false)
                         }
                     }
-                    val updatedList = dbHelper.getAllAgents()
+                    val updatedList = dbHelper.getAllAgents().filter { agent ->
+                        val name = (agent["name"] ?: "").trim().lowercase()
+                        val email = (agent["email"] ?: "").trim().lowercase()
+                        name !in deletedSetCloud && email !in deletedSetCloud
+                    }
                     registeredAgents.value = updatedList.distinctBy {
                         it["email"]?.lowercase()?.ifBlank { it["name"]?.lowercase() }
                     }
@@ -236,19 +253,7 @@ fun AgentsListScreen(
                         // Delete Agent Button
                         IconButton(
                             onClick = {
-                                val dbHelper = AzureDatabaseHelper(context)
-                                val agentId = agent["id"]?.toLongOrNull()
-                                if (agentId != null && agentId != 0L) {
-                                    dbHelper.deleteAgent(agentId)
-                                }
-                                if (email.isNotBlank()) {
-                                    dbHelper.deleteAgentByEmail(email)
-                                    FirebaseCloudSyncManager.deleteAgentFromCloud(email)
-                                }
-                                registeredAgents.value = registeredAgents.value.filter {
-                                    it["id"] != agent["id"] && it["email"] != email
-                                }
-                                Toast.makeText(context, "Agent $name deleted", Toast.LENGTH_SHORT).show()
+                                agentToDelete = agent
                             }
                         ) {
                             Surface(
@@ -274,6 +279,74 @@ fun AgentsListScreen(
                 Spacer(modifier = Modifier.height(20.dp))
             }
         }
+    }
+
+    if (agentToDelete != null) {
+        val targetName = agentToDelete?.get("name") ?: "Agent"
+        val targetEmail = agentToDelete?.get("email") ?: ""
+        val targetId = agentToDelete?.get("id")?.toLongOrNull()
+
+        AlertDialog(
+            onDismissRequest = { agentToDelete = null },
+            title = {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(Icons.Default.Warning, contentDescription = null, tint = Color(0xFFE53935), modifier = Modifier.size(22.dp))
+                    Text(
+                        text = "Permanently Delete Agent",
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = TextDark
+                    )
+                }
+            },
+            text = {
+                Text(
+                    text = "Are you sure you want to permanently delete agent '$targetName'? This action cannot be undone.",
+                    fontSize = 13.sp,
+                    color = TextMuted
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val dbHelper = AzureDatabaseHelper(context)
+                        val deletedSet = deletedPrefs.getStringSet("deleted_agent_keys", emptySet()).orEmpty().toMutableSet()
+                        if (targetName.isNotBlank()) deletedSet.add(targetName.trim().lowercase())
+                        if (targetEmail.isNotBlank()) deletedSet.add(targetEmail.trim().lowercase())
+                        deletedPrefs.edit().putStringSet("deleted_agent_keys", deletedSet).apply()
+
+                        if (targetId != null && targetId != 0L) {
+                            dbHelper.deleteAgent(targetId)
+                        }
+                        dbHelper.deleteAgentByNameOrEmail(targetName, targetEmail)
+                        FirebaseCloudSyncManager.deleteAgentFromCloud(targetName, targetEmail)
+
+                        registeredAgents.value = registeredAgents.value.filter {
+                            !it["name"].equals(targetName, ignoreCase = true) && !it["email"].equals(targetEmail, ignoreCase = true)
+                        }
+                        Toast.makeText(context, "Agent $targetName permanently deleted", Toast.LENGTH_SHORT).show()
+                        agentToDelete = null
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFE53935)),
+                    shape = RoundedCornerShape(10.dp)
+                ) {
+                    Text("Permanently Delete", fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                OutlinedButton(
+                    onClick = { agentToDelete = null },
+                    shape = RoundedCornerShape(10.dp)
+                ) {
+                    Text("Cancel", color = TextMuted)
+                }
+            },
+            containerColor = Color.White,
+            shape = RoundedCornerShape(20.dp)
+        )
     }
 }
 

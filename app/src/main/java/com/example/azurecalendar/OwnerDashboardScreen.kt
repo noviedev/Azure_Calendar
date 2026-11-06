@@ -66,6 +66,7 @@ fun OwnerDashboardScreen(
     }
 
     val context = LocalContext.current
+    val dbHelper = remember { AzureDatabaseHelper(context) }
     val isPreview = androidx.compose.ui.platform.LocalInspectionMode.current
     val appearancePrefs = remember { context.getSharedPreferences("azure_calendar_appearance_prefs", Context.MODE_PRIVATE) }
     val currentThemeHex = remember(selectedTab, currentSubScreen) {
@@ -75,12 +76,128 @@ fun OwnerDashboardScreen(
         AzureCalendarColors.updateThemeColor(currentThemeHex)
     }
 
+    val deletedPrefs = remember { context.getSharedPreferences("azure_calendar_deleted_events", Context.MODE_PRIVATE) }
+    var cloudOwnerEvents by remember { mutableStateOf<List<OwnerEventItem>>(emptyList()) }
+
+    DisposableEffect(Unit) {
+        val registration = FirebaseCloudSyncManager.listenToOwnerEvents { updatedEvents ->
+            cloudOwnerEvents = updatedEvents
+        }
+        onDispose {
+            registration.remove()
+        }
+    }
+
+    val defaultOwnerEvents = remember {
+        listOf(
+            OwnerEventItem(
+                id = "evt_bukas_grouping",
+                title = "bukas grouping tayo",
+                description = "Owner event created for All Agents.",
+                date = "Nov 7, 2026",
+                time = "1:00 PM",
+                createdBy = "Owner",
+                targetAgent = "All Agents",
+                eventLink = "https://azurecalendar.app/event/join?id=evt_bukas_grouping"
+            ),
+            OwnerEventItem(
+                id = "evt_bai_gilbert",
+                title = "bai",
+                description = "Owner event created for Gilbert.",
+                date = "Nov 6, 2026",
+                time = "2:00 PM",
+                createdBy = "Owner",
+                targetAgent = "Gilbert",
+                eventLink = "https://azurecalendar.app/event/join?id=evt_bai_gilbert"
+            )
+        )
+    }
+
+    val allOwnerEvents = remember(cloudOwnerEvents, FirebaseCloudSyncManager.globalCloudSyncTrigger.intValue) {
+        val dbOwnerEvts = if (isPreview) emptyList() else {
+            dbHelper.getAllEvents().filter { evt ->
+                val title = evt["title"] ?: ""
+                val unit = evt["unit"] ?: ""
+                val shape = evt["shape"] ?: ""
+                val isStaycation = title.startsWith("Staycation", ignoreCase = true) || shape.contains("Check", ignoreCase = true) || shape.contains("Reserve", ignoreCase = true)
+                !isStaycation && (unit.equals("Event", ignoreCase = true) || shape.contains("Owner Event", ignoreCase = true))
+            }.map { evt ->
+                val evtId = evt["id"] ?: "0"
+                OwnerEventItem(
+                    id = evtId,
+                    title = evt["title"] ?: "Owner Event",
+                    description = "Created by Owner/Admin for Agents",
+                    date = evt["date"] ?: "Sept 15, 2026",
+                    time = evt["time"] ?: "2:00 PM",
+                    createdBy = "Owner",
+                    targetAgent = "All Agents",
+                    eventLink = "https://azurecalendar.app/event/join?id=$evtId"
+                )
+            }
+        }
+        (cloudOwnerEvents + dbOwnerEvts + defaultOwnerEvents).distinctBy { "${it.title.lowercase().trim()}_${it.date}_${it.time}" }
+    }
+
+    LaunchedEffect(selectedTab) {
+        if (selectedTab == 3 && allOwnerEvents.isNotEmpty()) {
+            val seenPrefs = context.getSharedPreferences("azure_calendar_event_reads", Context.MODE_PRIVATE)
+            val userName = "Admin Owner"
+            val seenEditor = seenPrefs.edit()
+
+            allOwnerEvents.forEach { event ->
+                seenEditor.putBoolean("seen_event_${event.id}_$userName", true)
+                seenEditor.putBoolean("seen_event_${event.title}_$userName", true)
+            }
+            seenEditor.apply()
+            FirebaseCloudSyncManager.notifyCloudUpdate()
+        }
+    }
+
+    val unreadEventCount = remember(allOwnerEvents, FirebaseCloudSyncManager.globalCloudSyncTrigger.intValue, selectedTab) {
+        if (isPreview || selectedTab == 3) 0 else {
+            val deletedSet = deletedPrefs.getStringSet("deleted_ids", emptySet()).orEmpty()
+            val chatPrefs = context.getSharedPreferences("azure_calendar_chat_reads", Context.MODE_PRIVATE)
+            val seenPrefs = context.getSharedPreferences("azure_calendar_event_reads", Context.MODE_PRIVATE)
+            val userName = "Admin Owner"
+
+            val activeEvents = allOwnerEvents.filter {
+                it.id !in deletedSet && it.title !in deletedSet && !it.title.startsWith("Staycation", ignoreCase = true)
+            }
+
+            var unreadTotal = 0
+            activeEvents.forEach { event ->
+                val chatRoomId = FirebaseCloudSyncManager.getNormalizedEventId(event.id, event.title)
+                val dbMsgs = dbHelper.getChatMessagesForRoom(chatRoomId)
+                val memMsgs = EventChatRepository.getMessagesForEvent(chatRoomId, event.title, event.targetAgent)
+                val totalRoomMsgs = (dbMsgs + memMsgs).distinctBy { "${it.senderName.trim().lowercase()}_${it.messageText.trim()}_${it.timestamp}" }.size
+
+                val lastReadCount = chatPrefs.getInt("read_count_${chatRoomId}_$userName", 0)
+                val isChatRead = chatPrefs.getBoolean("read_all_${chatRoomId}_$userName", false)
+                val isSeen = seenPrefs.getBoolean("seen_event_${event.id}_$userName", false) ||
+                             seenPrefs.getBoolean("seen_event_${event.title}_$userName", false)
+
+                val unreadMsgs = if (isChatRead && totalRoomMsgs <= lastReadCount) 0 else (totalRoomMsgs - lastReadCount).coerceAtLeast(0)
+                val unreadEvt = if (!isSeen) 1 else 0
+
+                unreadTotal += (unreadMsgs + unreadEvt)
+            }
+
+            unreadTotal
+        }
+    }
+
+    var eventTabResetTrigger by remember { mutableIntStateOf(0) }
+
     Scaffold(
         bottomBar = {
             CalendarBottomNavigationBar(
                 selectedTab = selectedTab,
-                onTabSelected = {
-                    selectedTab = it
+                unreadEventCount = unreadEventCount,
+                onTabSelected = { tab ->
+                    if (tab == 3) {
+                        eventTabResetTrigger++
+                    }
+                    selectedTab = tab
                     currentSubScreen = "home"
                 }
             )
@@ -107,7 +224,7 @@ fun OwnerDashboardScreen(
                 else -> when (selectedTab) {
                     1 -> OwnerCalendarTabContent(onNavigateToUnits = { selectedTab = 2 })
                     2 -> OwnerUnitsTabContent(onTabSelected = { selectedTab = it })
-                    3 -> NotificationsCenterScreen(isOwnerMode = true, agentName = "Admin Owner")
+                    3 -> NotificationsCenterScreen(isOwnerMode = true, agentName = "Admin Owner", resetTrigger = eventTabResetTrigger)
                     4 -> ProfileTabContent(agentName = "Admin", isOwnerMode = true, onLogoutClick = onLogoutClick)
                     else -> OwnerDashboardHomeContent(
                         onNavigateToaddUnit = { currentSubScreen = "add_unit" },
@@ -263,7 +380,7 @@ private fun OwnerCalendarTabContent(
                                     shape = shape,
                                     color = colorLong
                                 )
-                                val eventMap = mapOf(
+                                val eventMap = mapOf<String, Any>(
                                     "id" to evtId.toString(),
                                     "title" to "Staycation - $shape",
                                     "date" to finalTargetDate,
@@ -271,7 +388,7 @@ private fun OwnerCalendarTabContent(
                                     "agent" to "Admin Owner",
                                     "unit" to unitName,
                                     "shape" to shape,
-                                    "color" to colorLong.toString()
+                                    "color" to colorLong
                                 )
                                 FirebaseCloudSyncManager.pushEventToCloud(eventMap)
                             } else {
@@ -285,7 +402,7 @@ private fun OwnerCalendarTabContent(
                                     shape = shape,
                                     color = colorLong
                                 )
-                                val eventMap = mapOf(
+                                val eventMap = mapOf<String, Any>(
                                     "id" to newEvtId.toString(),
                                     "title" to "Staycation - $shape",
                                     "date" to finalTargetDate,
@@ -293,7 +410,7 @@ private fun OwnerCalendarTabContent(
                                     "agent" to "Admin Owner",
                                     "unit" to unitName,
                                     "shape" to shape,
-                                    "color" to colorLong.toString()
+                                    "color" to colorLong
                                 )
                                 FirebaseCloudSyncManager.pushEventToCloud(eventMap)
                             }
@@ -1149,7 +1266,7 @@ private fun OwnerUnitsTabContent(onTabSelected: (Int) -> Unit) {
                                 shape = shape,
                                 color = colorLong
                             )
-                            val eventMap = mapOf(
+                            val eventMap = mapOf<String, Any>(
                                 "id" to evtId.toString(),
                                 "title" to "Staycation - $shape",
                                 "date" to finalTargetDate,
@@ -1157,7 +1274,7 @@ private fun OwnerUnitsTabContent(onTabSelected: (Int) -> Unit) {
                                 "agent" to "Admin Owner",
                                 "unit" to unitName,
                                 "shape" to shape,
-                                "color" to colorLong.toString()
+                                "color" to colorLong
                             )
                             FirebaseCloudSyncManager.pushEventToCloud(eventMap)
                         } else {
@@ -1171,7 +1288,7 @@ private fun OwnerUnitsTabContent(onTabSelected: (Int) -> Unit) {
                                 shape = shape,
                                 color = colorLong
                             )
-                            val eventMap = mapOf(
+                            val eventMap = mapOf<String, Any>(
                                 "id" to newEvtId.toString(),
                                 "title" to "Staycation - $shape",
                                 "date" to finalTargetDate,
@@ -1179,7 +1296,7 @@ private fun OwnerUnitsTabContent(onTabSelected: (Int) -> Unit) {
                                 "agent" to "Admin Owner",
                                 "unit" to unitName,
                                 "shape" to shape,
-                                "color" to colorLong.toString()
+                                "color" to colorLong
                             )
                             FirebaseCloudSyncManager.pushEventToCloud(eventMap)
                         }

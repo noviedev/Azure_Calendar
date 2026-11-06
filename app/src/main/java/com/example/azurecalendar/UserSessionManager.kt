@@ -31,6 +31,10 @@ class UserSessionManager(context: Context) {
         }
     }
 
+    fun isLoggedIn(): Boolean {
+        return prefs.getBoolean(KEY_IS_LOGGED_IN, false)
+    }
+
     fun saveSession(username: String, role: String) {
         prefs.edit().apply {
             putBoolean(KEY_IS_LOGGED_IN, true)

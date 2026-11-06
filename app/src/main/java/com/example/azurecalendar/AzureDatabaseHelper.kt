@@ -231,7 +231,20 @@ class AzureDatabaseHelper(context: Context) : SQLiteOpenHelper(context.applicati
         val db = this.writableDatabase
         val rows = db.delete(TABLE_AGENTS, "$COLUMN_AGENT_EMAIL = ?", arrayOf(email))
         if (syncToCloud && email.isNotBlank()) {
-            FirebaseCloudSyncManager.deleteAgentFromCloud(email)
+            FirebaseCloudSyncManager.deleteAgentFromCloud("", email)
+        }
+        return rows
+    }
+
+    fun deleteAgentByNameOrEmail(name: String, email: String, syncToCloud: Boolean = true): Int {
+        val db = this.writableDatabase
+        val rows = db.delete(
+            TABLE_AGENTS,
+            "$COLUMN_AGENT_EMAIL = ? OR $COLUMN_AGENT_NAME = ?",
+            arrayOf(email, name)
+        )
+        if (syncToCloud && (email.isNotBlank() || name.isNotBlank())) {
+            FirebaseCloudSyncManager.deleteAgentFromCloud(name, email)
         }
         return rows
     }
@@ -271,14 +284,14 @@ class AzureDatabaseHelper(context: Context) : SQLiteOpenHelper(context.applicati
         // Automatically push to Firebase Firestore whenever a user adds/updates an event!
         if (syncToCloud && cleanUnit.isNotBlank() && date.isNotBlank() && title != "TEMP") {
             FirebaseCloudSyncManager.pushEventToCloud(
-                mapOf(
+                mapOf<String, Any>(
                     "title" to title,
                     "date" to date,
                     "time" to time,
                     "agent" to agent,
                     "unit" to normalizedUnit,
                     "shape" to shape.ifBlank { "Reserved" },
-                    "color" to color.toString()
+                    "color" to color
                 )
             )
         }
@@ -397,14 +410,14 @@ class AzureDatabaseHelper(context: Context) : SQLiteOpenHelper(context.applicati
         val rows = db.update(TABLE_EVENTS, values, "$COLUMN_ID = ?", arrayOf(id.toString()))
         if (cleanUnit.isNotBlank() && date.isNotBlank()) {
             FirebaseCloudSyncManager.pushEventToCloud(
-                mapOf(
+                mapOf<String, Any>(
                     "title" to title,
                     "date" to date,
                     "time" to time,
                     "agent" to agent,
                     "unit" to normalizedUnit,
                     "shape" to shape.ifBlank { "Reserved" },
-                    "color" to color.toString()
+                    "color" to color
                 )
             )
         }
@@ -445,6 +458,7 @@ class AzureDatabaseHelper(context: Context) : SQLiteOpenHelper(context.applicati
                     val senderRole = cursor.getString(cursor.getColumnIndexOrThrow(COLUMN_CHAT_SENDER_ROLE))
                     val text = cursor.getString(cursor.getColumnIndexOrThrow(COLUMN_CHAT_TEXT))
                     val timestamp = cursor.getString(cursor.getColumnIndexOrThrow(COLUMN_CHAT_TIMESTAMP))
+                    val createdTime = cursor.getLong(cursor.getColumnIndexOrThrow(COLUMN_CHAT_CREATED_TIME))
                     list.add(
                         GroupChatMessage(
                             id = id,
@@ -452,7 +466,8 @@ class AzureDatabaseHelper(context: Context) : SQLiteOpenHelper(context.applicati
                             senderRole = senderRole,
                             messageText = text,
                             timestamp = timestamp,
-                            isSelf = false
+                            isSelf = false,
+                            createdTime = createdTime
                         )
                     )
                 } while (cursor.moveToNext())

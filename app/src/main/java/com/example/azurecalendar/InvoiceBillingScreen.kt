@@ -540,52 +540,6 @@ fun InvoiceDetailsScreen(
             }
         }
 
-        Spacer(modifier = Modifier.height(8.dp))
-
-        // Action Buttons Row (Download & Print)
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            Button(
-                onClick = {
-                    saveInvoiceFile(context, invoiceItem)
-                },
-                shape = RoundedCornerShape(14.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = PurplePrimary),
-                modifier = Modifier
-                    .weight(1f)
-                    .height(50.dp)
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    Text(text = "Download", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = Color.White)
-                    Icon(
-                        imageVector = Icons.Default.FileDownload,
-                        contentDescription = "Download",
-                        tint = Color.White,
-                        modifier = Modifier.size(18.dp)
-                    )
-                }
-            }
-
-            OutlinedButton(
-                onClick = {
-                    showPrintOptionsDialog = true
-                },
-                shape = RoundedCornerShape(14.dp),
-                border = BorderStroke(1.dp, PurplePrimary),
-                colors = ButtonDefaults.outlinedButtonColors(contentColor = PurplePrimary),
-                modifier = Modifier
-                    .weight(1f)
-                    .height(50.dp)
-            ) {
-                Text(text = "Print", fontSize = 14.sp, fontWeight = FontWeight.Bold)
-            }
-        }
-
         Spacer(modifier = Modifier.height(20.dp))
     }
 

@@ -31,9 +31,11 @@ object FirebaseCloudSyncManager {
     private var agentsListener: ListenerRegistration? = null
     private var deletedUnitsListener: ListenerRegistration? = null
     private var deletedEventsListener: ListenerRegistration? = null
+    private var deletedAgentsListener: ListenerRegistration? = null
+    private var allChatsListener: ListenerRegistration? = null
     private var adminProfileListener: ListenerRegistration? = null
-
     private fun sanitizeDocId(rawId: String): String {
+
         return rawId.trim()
             .replace("/", "-")
             .replace("\\", "-")
@@ -249,33 +251,41 @@ object FirebaseCloudSyncManager {
         }
     }
 
-    fun pushEventToCloud(eventData: Map<String, String>) {
+    fun pushEventToCloud(eventData: Map<String, Any?>) {
         try {
             val db = FirebaseFirestore.getInstance()
-            val rawUnit = eventData["unit"] ?: ""
+            val rawUnit = eventData["unit"]?.toString() ?: ""
             val cleanUnit = rawUnit.replace("Unit", "", ignoreCase = true).trim()
             val normalizedUnit = if (cleanUnit.isNotBlank()) "Unit $cleanUnit" else rawUnit
-            val dateText = eventData["date"] ?: ""
-            val titleText = eventData["title"] ?: "Booking"
+            val dateText = eventData["date"]?.toString() ?: ""
+            val titleText = eventData["title"]?.toString() ?: "Booking"
 
             val rawDocId = if (cleanUnit.isNotBlank() && dateText.isNotBlank()) {
                 "${cleanUnit}_${dateText}"
             } else {
-                eventData["id"] ?: "${cleanUnit}_${titleText}_${System.currentTimeMillis()}"
+                eventData["id"]?.toString() ?: "${cleanUnit}_${titleText}_${System.currentTimeMillis()}"
             }
             val docId = sanitizeDocId(rawDocId)
+
+            val rawColor = eventData["color"]
+            val colorLong = when (rawColor) {
+                is Number -> rawColor.toLong()
+                is String -> rawColor.toLongOrNull() ?: 0L
+                else -> 0L
+            }
 
             val enrichedData = eventData.toMutableMap().apply {
                 put("unit", normalizedUnit)
                 put("cleanUnit", cleanUnit)
                 put("updatedAt", System.currentTimeMillis().toString())
+                put("color", colorLong)
             }
 
             db.collection("events").document(docId)
                 .set(enrichedData, SetOptions.merge())
                 .addOnSuccessListener {
                     Log.d(TAG, "Event $docId synced to Cloud Firestore!")
-                    val shape = eventData["shape"] ?: ""
+                    val shape = eventData["shape"]?.toString() ?: ""
                     val isGeneralEvent = cleanUnit.equals("Event", ignoreCase = true) || cleanUnit.contains("Meeting", ignoreCase = true) || shape.contains("Owner Event", ignoreCase = true)
                     if (cleanUnit.isNotBlank() && shape.isNotBlank() && !isGeneralEvent) {
                         pushUnitStatusToCloud(normalizedUnit, shape)
@@ -295,18 +305,20 @@ object FirebaseCloudSyncManager {
             val dbHelper = AzureDatabaseHelper(context.applicationContext)
             val localEvents = dbHelper.getAllEvents()
             for (evt in localEvents) {
-                val date = evt["date"]?.toString() ?: ""
-                val time = evt["time"]?.toString() ?: "2:00 PM"
-                val unit = evt["unit"]?.toString() ?: ""
+                val date = evt["date"] ?: ""
+                val time = evt["time"] ?: "2:00 PM"
+                val unit = evt["unit"] ?: ""
+                val rawColor = evt["color"]
+                val colorLong = rawColor?.toLongOrNull() ?: 0L
                 if (unit.isNotBlank() && date.isNotBlank()) {
-                    val eventMap = mapOf(
-                        "title" to (evt["title"]?.toString() ?: "Booking"),
+                    val eventMap = mapOf<String, Any>(
+                        "title" to (evt["title"] ?: "Booking"),
                         "date" to date,
                         "time" to time,
                         "agent" to (evt["agent"]?.toString() ?: "Agent"),
                         "unit" to unit,
                         "shape" to (evt["shape"]?.toString() ?: "Reserved"),
-                        "color" to (evt["color"]?.toString() ?: "0")
+                        "color" to colorLong
                     )
                     pushEventToCloud(eventMap)
                 }
@@ -550,19 +562,37 @@ object FirebaseCloudSyncManager {
         }
     }
 
-    fun deleteAgentFromCloud(email: String) {
+    fun deleteAgentFromCloud(name: String = "", email: String = "") {
         try {
-            if (email.isBlank()) return
             val db = FirebaseFirestore.getInstance()
             val cleanEmail = email.trim().lowercase()
+            val cleanName = name.trim().lowercase()
+            if (cleanEmail.isBlank() && cleanName.isBlank()) return
+
             db.collection("agents").get().addOnSuccessListener { query ->
                 for (doc in query.documents) {
-                    val docEmail = doc.getString("email") ?: ""
-                    if (docEmail.trim().equals(cleanEmail, ignoreCase = true) || doc.id.equals(cleanEmail, ignoreCase = true)) {
+                    val docEmail = doc.getString("email")?.trim()?.lowercase() ?: ""
+                    val docName = doc.getString("name")?.trim()?.lowercase() ?: ""
+                    if ((cleanEmail.isNotBlank() && docEmail == cleanEmail) ||
+                        (cleanName.isNotBlank() && docName == cleanName) ||
+                        doc.id.equals(cleanEmail, ignoreCase = true)
+                    ) {
                         doc.reference.delete()
                     }
                 }
+                notifyCloudUpdate()
             }
+
+            val docId = if (cleanEmail.isNotBlank()) cleanEmail else cleanName
+            val delData = mapOf(
+                "name" to name,
+                "email" to email,
+                "deletedAt" to System.currentTimeMillis()
+            )
+            db.collection("deleted_agents").document(docId).set(delData)
+                .addOnSuccessListener {
+                    notifyCloudUpdate()
+                }
         } catch (e: Exception) {
             Log.e(TAG, "Delete agent cloud error: ${e.message}")
         }
@@ -722,7 +752,12 @@ object FirebaseCloudSyncManager {
                         val uTow = doc.getString("tower") ?: "Azure Tower"
                         val uStat = doc.getString("status") ?: "Available"
                         val uOwn = doc.getString("owner") ?: "Owner"
-                        val uRate = doc.getDouble("rate") ?: 2500.0
+                        val rawRate = doc.get("rate")
+                        val uRate = when (rawRate) {
+                            is Number -> rawRate.toDouble()
+                            is String -> rawRate.toDoubleOrNull() ?: 2500.0
+                            else -> 2500.0
+                        }
                         val cloudImg = doc.getString("image_uri") ?: ""
                         val uDesc = doc.getString("description") ?: "1 Bedroom"
 
@@ -802,6 +837,9 @@ object FirebaseCloudSyncManager {
                 .addSnapshotListener { snapshots, e ->
                     if (e != null) return@addSnapshotListener
                     if (snapshots != null && !snapshots.isEmpty) {
+                        val deletedPrefs = appContext.getSharedPreferences("azure_calendar_deleted_agents", Context.MODE_PRIVATE)
+                        val currentDeletedSet = deletedPrefs.getStringSet("deleted_agent_keys", emptySet()).orEmpty()
+
                         for (doc in snapshots.documents) {
                             val aName = doc.getString("name") ?: ""
                             val aEmail = doc.getString("email") ?: ""
@@ -809,7 +847,10 @@ object FirebaseCloudSyncManager {
                             val aRole = doc.getString("role") ?: "Property Agent"
                             val aGender = doc.getString("gender") ?: "Female"
 
-                            if (aName.isNotBlank() && aEmail.isNotBlank()) {
+                            val isDeleted = currentDeletedSet.contains(aEmail.trim().lowercase()) ||
+                                            currentDeletedSet.contains(aName.trim().lowercase())
+
+                            if (aName.isNotBlank() && aEmail.isNotBlank() && !isDeleted) {
                                 dbHelper.insertAgent(aName, aEmail, aPhone, aRole, aGender, syncToCloud = false)
                             }
                         }
@@ -880,6 +921,75 @@ object FirebaseCloudSyncManager {
                         Log.e(TAG, "Error syncing deleted events: ${err.message}")
                     }
                 }
+
+            // 8. Deleted Agents Listener
+            deletedAgentsListener?.remove()
+            deletedAgentsListener = db.collection("deleted_agents")
+                .addSnapshotListener { snapshots, e ->
+                    if (e != null || snapshots == null || snapshots.isEmpty) return@addSnapshotListener
+                    try {
+                        val deletedPrefs = appContext.getSharedPreferences("azure_calendar_deleted_agents", Context.MODE_PRIVATE)
+                        val currentSet = deletedPrefs.getStringSet("deleted_agent_keys", emptySet()).orEmpty().toMutableSet()
+                        var changed = false
+
+                        for (doc in snapshots.documents) {
+                            val delName = doc.getString("name")?.trim()?.lowercase() ?: ""
+                            val delEmail = doc.getString("email")?.trim()?.lowercase() ?: doc.id.trim().lowercase()
+
+                            if (delName.isNotBlank() && currentSet.add(delName)) changed = true
+                            if (delEmail.isNotBlank() && currentSet.add(delEmail)) changed = true
+
+                            dbHelper.deleteAgentByEmail(delEmail, syncToCloud = false)
+                        }
+
+                        if (changed) {
+                            deletedPrefs.edit().putStringSet("deleted_agent_keys", currentSet).apply()
+                        }
+                        notifyCloudUpdate()
+                        onSyncTriggered()
+                    } catch (err: Exception) {
+                        Log.e(TAG, "Error syncing deleted agents: ${err.message}")
+                    }
+                }
+
+            // 9. Global Event Chat Messages Listener (Background sync across devices)
+            allChatsListener?.remove()
+            allChatsListener = db.collectionGroup("messages")
+                .addSnapshotListener { snapshots, e ->
+                    if (e != null || snapshots == null) return@addSnapshotListener
+                    try {
+                        for (doc in snapshots.documents) {
+                            val roomId = doc.reference.parent.parent?.id ?: continue
+                            val id = doc.getString("id") ?: doc.id
+                            val senderName = doc.getString("senderName") ?: "User"
+                            val senderRole = doc.getString("senderRole") ?: "Agent"
+                            val messageText = doc.getString("messageText") ?: ""
+                            val timestamp = doc.getString("timestamp") ?: "12:00 PM"
+                            val rawCreatedTime = doc.get("createdTime")
+                            val createdTime = when (rawCreatedTime) {
+                                is Number -> rawCreatedTime.toLong()
+                                is String -> rawCreatedTime.toLongOrNull() ?: System.currentTimeMillis()
+                                else -> System.currentTimeMillis()
+                            }
+
+                            if (messageText.isNotBlank()) {
+                                dbHelper.insertChatMessage(
+                                    msgId = id,
+                                    roomId = roomId,
+                                    senderName = senderName,
+                                    senderRole = senderRole,
+                                    text = messageText,
+                                    timestamp = timestamp,
+                                    createdTime = createdTime
+                                )
+                            }
+                        }
+                        notifyCloudUpdate()
+                        onSyncTriggered()
+                    } catch (err: Exception) {
+                        Log.e(TAG, "Error syncing global chat messages: ${err.message}")
+                    }
+                }
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start Firestore cloud listener: ${e.message}")
         }
@@ -939,7 +1049,16 @@ object FirebaseCloudSyncManager {
                     val targetAgent = doc.getString("targetAgent") ?: "All Agents"
                     val eventLink = doc.getString("eventLink") ?: "https://azurecalendar.app/event/join?id=$id"
 
+                    val rawCreated = doc.get("updatedAt") ?: doc.get("createdAt")
+                    val createdAt = when (rawCreated) {
+                        is Number -> rawCreated.toLong()
+                        is String -> rawCreated.toLongOrNull() ?: 0L
+                        else -> 0L
+                    }
+
                     if (title.isNotBlank() && !title.startsWith("Staycation", ignoreCase = true)) {
+                        val idNum = id.replace(Regex("[^0-9]"), "").toLongOrNull() ?: 0L
+                        val finalStamp = if (createdAt > 0L) createdAt else idNum
                         resultList.add(
                             OwnerEventItem(
                                 id = id,
@@ -949,12 +1068,14 @@ object FirebaseCloudSyncManager {
                                 time = time,
                                 createdBy = createdBy,
                                 targetAgent = targetAgent,
-                                eventLink = eventLink
+                                eventLink = eventLink,
+                                createdAt = finalStamp
                             )
                         )
                     }
                 }
                 onEventsUpdated(resultList)
+                notifyCloudUpdate()
             }
     }
 
@@ -1107,7 +1228,12 @@ object FirebaseCloudSyncManager {
                     val senderRole = doc.getString("senderRole") ?: "Agent"
                     val messageText = doc.getString("messageText") ?: ""
                     val timestamp = doc.getString("timestamp") ?: "12:00 PM"
-                    val createdTime = doc.getLong("createdTime") ?: System.currentTimeMillis()
+                    val rawCreatedTime = doc.get("createdTime")
+                    val createdTime = when (rawCreatedTime) {
+                        is Number -> rawCreatedTime.toLong()
+                        is String -> rawCreatedTime.toLongOrNull() ?: System.currentTimeMillis()
+                        else -> System.currentTimeMillis()
+                    }
 
                     if (messageText.isNotBlank()) {
                         dbHelper.insertChatMessage(
@@ -1126,7 +1252,8 @@ object FirebaseCloudSyncManager {
                                 senderRole = senderRole,
                                 messageText = messageText,
                                 timestamp = timestamp,
-                                isSelf = false
+                                isSelf = false,
+                                createdTime = createdTime
                             )
                         )
                     }
@@ -1142,6 +1269,8 @@ object FirebaseCloudSyncManager {
         unitsCatalogListener?.remove()
         deletedUnitsListener?.remove()
         deletedEventsListener?.remove()
+        deletedAgentsListener?.remove()
+        allChatsListener?.remove()
         agentsListener?.remove()
         adminProfileListener?.remove()
         eventsListener = null
@@ -1149,6 +1278,8 @@ object FirebaseCloudSyncManager {
         unitsCatalogListener = null
         deletedUnitsListener = null
         deletedEventsListener = null
+        deletedAgentsListener = null
+        allChatsListener = null
         agentsListener = null
         adminProfileListener = null
     }

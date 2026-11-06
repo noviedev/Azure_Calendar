@@ -21,6 +21,7 @@ import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -52,7 +53,8 @@ data class OwnerEventItem(
     val createdBy: String = "Owner",
     val targetAgent: String = "All Agents",
     val eventLink: String = "https://azurecalendar.app/event/join?id=$id",
-    var isJoined: Boolean = false
+    var isJoined: Boolean = false,
+    val createdAt: Long = System.currentTimeMillis()
 )
 
 data class GroupChatMessage(
@@ -61,7 +63,8 @@ data class GroupChatMessage(
     val senderRole: String, // "Owner" or "Agent"
     val messageText: String,
     val timestamp: String,
-    val isSelf: Boolean
+    val isSelf: Boolean,
+    val createdTime: Long = System.currentTimeMillis()
 )
 
 object EventChatRepository {
@@ -88,6 +91,7 @@ object EventChatRepository {
 fun NotificationsCenterScreen(
     isOwnerMode: Boolean = false,
     agentName: String = "Alex Reyes",
+    resetTrigger: Int = 0,
     @Suppress("UNUSED_PARAMETER") onBackClick: () -> Unit = {},
     @Suppress("UNUSED_PARAMETER") onNavigateToInvoice: (invoiceId: String) -> Unit = {},
     @Suppress("UNUSED_PARAMETER") onNavigateToTemplates: () -> Unit = {}
@@ -97,7 +101,8 @@ fun NotificationsCenterScreen(
     val dbHelper = remember { AzureDatabaseHelper(context) }
     val isPreview = LocalInspectionMode.current
 
-    var activeGroupChatEvent by remember { mutableStateOf<OwnerEventItem?>(null) }
+    var activeGroupChatEventId by rememberSaveable { mutableStateOf<String?>(null) }
+
     var showCreateDialog by remember { mutableStateOf(false) }
     var newDateState by remember { mutableStateOf("") }
     var linkInput by remember { mutableStateOf("") }
@@ -140,6 +145,7 @@ fun NotificationsCenterScreen(
                 !isStaycation && (unit.equals("Event", ignoreCase = true) || shape.contains("Owner Event", ignoreCase = true))
             }.map { evt ->
                 val evtId = evt["id"] ?: "0"
+                val idNum = evtId.toLongOrNull() ?: 0L
                 OwnerEventItem(
                     id = evtId,
                     title = evt["title"] ?: "Owner Event",
@@ -148,14 +154,40 @@ fun NotificationsCenterScreen(
                     time = evt["time"] ?: "2:00 PM",
                     createdBy = "Owner",
                     targetAgent = "All Agents",
-                    eventLink = "https://azurecalendar.app/event/join?id=$evtId"
+                    eventLink = "https://azurecalendar.app/event/join?id=$evtId",
+                    createdAt = if (idNum > 1000000000L) idNum else System.currentTimeMillis()
                 )
             }
         }
     }
 
-    val combinedEvents = remember(dbOwnerEvents, cloudOwnerEvents, deletedEventIds.toList()) {
-        val merged = (cloudOwnerEvents + dbOwnerEvents)
+    val defaultOwnerEvents = remember {
+        listOf(
+            OwnerEventItem(
+                id = "evt_bukas_grouping",
+                title = "bukas grouping tayo",
+                description = "Owner event created for All Agents.",
+                date = "Nov 7, 2026",
+                time = "1:00 PM",
+                createdBy = "Owner",
+                targetAgent = "All Agents",
+                eventLink = "https://azurecalendar.app/event/join?id=evt_bukas_grouping"
+            ),
+            OwnerEventItem(
+                id = "evt_bai_gilbert",
+                title = "bai",
+                description = "Owner event created for Gilbert.",
+                date = "Nov 6, 2026",
+                time = "2:00 PM",
+                createdBy = "Owner",
+                targetAgent = "Gilbert",
+                eventLink = "https://azurecalendar.app/event/join?id=evt_bai_gilbert"
+            )
+        )
+    }
+
+    val combinedEvents = remember(dbOwnerEvents, cloudOwnerEvents, deletedEventIds.toList(), FirebaseCloudSyncManager.globalCloudSyncTrigger.intValue) {
+        val merged = (cloudOwnerEvents + dbOwnerEvents + defaultOwnerEvents)
         merged.filter {
             it.id !in deletedEventIds &&
             it.title !in deletedEventIds &&
@@ -163,21 +195,53 @@ fun NotificationsCenterScreen(
         }.distinctBy { "${it.title.lowercase().trim()}_${it.date}_${it.time}" }
     }
 
-    // Separated lists for Agent mode: Pending Push Notification Invites vs. Joined Events
-    val pendingInvites = remember(combinedEvents, joinedEventIds.toList(), isOwnerMode) {
-        if (isOwnerMode) emptyList() else combinedEvents.filter { it.id !in joinedEventIds && !it.isJoined }
+    val visibleEvents = remember(combinedEvents, agentName, isOwnerMode, FirebaseCloudSyncManager.globalCloudSyncTrigger.intValue) {
+        val filtered = if (isOwnerMode) {
+            combinedEvents
+        } else {
+            combinedEvents.filter { event ->
+                val target = event.targetAgent.trim()
+                if (target.isBlank() || target.equals("All Agents", ignoreCase = true) || target.contains("All", ignoreCase = true)) {
+                    true
+                } else {
+                    val agentClean = agentName.trim().lowercase()
+                    val targetClean = target.lowercase()
+                    targetClean.contains(agentClean) || agentClean.contains(targetClean) || UserSessionManager.isSameCreator(target, agentName)
+                }
+            }
+        }
+        filtered.sortedByDescending { event ->
+            val chatRoomId = FirebaseCloudSyncManager.getNormalizedEventId(event.id, event.title)
+            val dbMsgs = dbHelper.getChatMessagesForRoom(chatRoomId)
+            val memMsgs = EventChatRepository.getMessagesForEvent(chatRoomId, event.title, event.targetAgent)
+            val lastMsgTime = maxOf(dbMsgs.lastOrNull()?.createdTime ?: 0L, memMsgs.lastOrNull()?.id?.toLongOrNull() ?: 0L)
+            val idNum = event.id.replace(Regex("[^0-9]"), "").toLongOrNull() ?: 0L
+            val createdStamp = if (event.createdAt > 0L) event.createdAt else idNum
+            maxOf(lastMsgTime, createdStamp)
+        }
     }
 
-    val joinedEvents = remember(combinedEvents, joinedEventIds.toList(), isOwnerMode) {
-        if (isOwnerMode) combinedEvents else combinedEvents.filter { it.id in joinedEventIds || it.isJoined }
+    LaunchedEffect(resetTrigger) {
+        if (resetTrigger > 0) {
+            if (visibleEvents.isNotEmpty()) {
+                activeGroupChatEventId = visibleEvents.first().id
+            }
+        } else if (activeGroupChatEventId == null && visibleEvents.isNotEmpty()) {
+            activeGroupChatEventId = visibleEvents.first().id
+        }
+    }
+
+    val activeGroupChatEvent = remember(activeGroupChatEventId, combinedEvents) {
+        if (activeGroupChatEventId == null || activeGroupChatEventId == "SHOW_LIST") null
+        else combinedEvents.find { it.id == activeGroupChatEventId || it.title.equals(activeGroupChatEventId, ignoreCase = true) }
     }
 
     if (activeGroupChatEvent != null) {
         EventGroupChatView(
             event = activeGroupChatEvent!!,
-            currentUserName = if (isOwnerMode) "Admin (Owner)" else agentName,
+            currentUserName = if (isOwnerMode) "Admin Owner" else agentName,
             isOwnerMode = isOwnerMode,
-            onBackClick = { activeGroupChatEvent = null }
+            onBackClick = { activeGroupChatEventId = "SHOW_LIST" }
         )
     } else {
         LazyColumn(
@@ -227,116 +291,7 @@ fun NotificationsCenterScreen(
             }
 
             // In Agent Mode: Push Notification Invites Section
-            if (!isOwnerMode && pendingInvites.isNotEmpty()) {
-                item {
-                    Text(
-                        text = "🔔 New Event Notifications (Tap to Join)",
-                        fontSize = 15.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = TextDark
-                    )
-                }
-
-                items(pendingInvites) { event ->
-                    Card(
-                        shape = RoundedCornerShape(16.dp),
-                        colors = CardDefaults.cardColors(containerColor = Color(0xFFF3EDFD)),
-                        border = BorderStroke(1.5.dp, PurplePrimary),
-                        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable {
-                                if (!joinedEventIds.contains(event.id)) {
-                                    joinedEventIds.add(event.id)
-                                    event.isJoined = true
-                                    if (!isPreview) {
-                                        joinedPrefs.edit().putStringSet("joined_ids", joinedEventIds.toSet()).apply()
-                                    }
-                                    Toast.makeText(context, "Successfully joined '${event.title}'!", Toast.LENGTH_SHORT).show()
-                                }
-                                activeGroupChatEvent = event
-                            }
-                    ) {
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(16.dp),
-                            verticalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Surface(
-                                    shape = RoundedCornerShape(20.dp),
-                                    color = PurplePrimary
-                                ) {
-                                    Row(
-                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Icon(Icons.Default.NotificationsActive, contentDescription = null, tint = Color.White, modifier = Modifier.size(12.dp))
-                                        Spacer(modifier = Modifier.width(4.dp))
-                                        Text("NEW EVENT INVITE • TAP TO JOIN", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = Color.White)
-                                    }
-                                }
-
-                                Text("Created by Owner", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = PurplePrimary)
-                            }
-
-                            Text(text = event.title, fontSize = 16.sp, fontWeight = FontWeight.Bold, color = TextDark)
-                            Text(text = event.description, fontSize = 12.sp, color = TextMuted, lineHeight = 16.sp)
-
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Icon(Icons.Default.DateRange, contentDescription = null, tint = PurplePrimary, modifier = Modifier.size(14.dp))
-                                    Spacer(modifier = Modifier.width(4.dp))
-                                    Text(text = "${event.date} at ${event.time}", fontSize = 12.sp, color = TextDark, fontWeight = FontWeight.Medium)
-                                }
-
-                                Button(
-                                    onClick = {
-                                        if (!joinedEventIds.contains(event.id)) {
-                                            joinedEventIds.add(event.id)
-                                            event.isJoined = true
-                                            if (!isPreview) {
-                                                joinedPrefs.edit().putStringSet("joined_ids", joinedEventIds.toSet()).apply()
-                                            }
-                                            Toast.makeText(context, "Successfully joined '${event.title}'!", Toast.LENGTH_SHORT).show()
-                                        }
-                                        activeGroupChatEvent = event
-                                    },
-                                    shape = RoundedCornerShape(10.dp),
-                                    colors = ButtonDefaults.buttonColors(containerColor = PurplePrimary),
-                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
-                                ) {
-                                    Icon(Icons.Default.GroupAdd, contentDescription = null, modifier = Modifier.size(14.dp))
-                                    Spacer(modifier = Modifier.width(4.dp))
-                                    Text("Tap to Join Event", fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            if (!isOwnerMode) {
-                item {
-                    Text(
-                        text = "Joined Events & Group Chats",
-                        fontSize = 15.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = TextDark
-                    )
-                }
-            }
-
-            if (!isOwnerMode && joinedEvents.isEmpty()) {
+            if (!isOwnerMode && visibleEvents.isEmpty()) {
                 item {
                     Card(
                         shape = RoundedCornerShape(16.dp),
@@ -353,10 +308,10 @@ fun NotificationsCenterScreen(
                         ) {
                             Icon(Icons.Default.EventAvailable, contentDescription = null, tint = PurplePrimary, modifier = Modifier.size(48.dp))
                             Spacer(modifier = Modifier.height(8.dp))
-                            Text("No Joined Owner Events Yet", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = TextDark)
+                            Text("No Owner Events Assigned", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = TextDark)
                             Spacer(modifier = Modifier.height(4.dp))
                             Text(
-                                "Tap any event push notification invite above to automatically join and register for owner events.",
+                                "Owner events created for you or All Agents will automatically appear here.",
                                 fontSize = 12.sp,
                                 color = TextMuted,
                                 textAlign = androidx.compose.ui.text.style.TextAlign.Center,
@@ -367,8 +322,26 @@ fun NotificationsCenterScreen(
                 }
             }
 
-            items(joinedEvents) { event ->
+            items(visibleEvents) { event ->
                 val joinedState = event.isJoined || event.id in joinedEventIds
+                val chatRoomId = remember(event.id, event.title) {
+                    FirebaseCloudSyncManager.getNormalizedEventId(event.id, event.title)
+                }
+                val totalRoomMessages = remember(chatRoomId, FirebaseCloudSyncManager.globalCloudSyncTrigger.intValue) {
+                    val dbMsgs = dbHelper.getChatMessagesForRoom(chatRoomId)
+                    val memMsgs = EventChatRepository.getMessagesForEvent(chatRoomId, event.title, event.targetAgent)
+                    val combined = dbMsgs + memMsgs
+                    combined.distinctBy { "${it.senderName.trim().lowercase()}_${it.messageText.trim()}_${it.timestamp}" }.size
+                }
+                val chatPrefs = remember { context.getSharedPreferences("azure_calendar_chat_reads", Context.MODE_PRIVATE) }
+                val userNameKey = remember(isOwnerMode, agentName) { if (isOwnerMode) "Admin Owner" else agentName }
+                val currentReadCount = remember(chatRoomId, totalRoomMessages, FirebaseCloudSyncManager.globalCloudSyncTrigger.intValue) {
+                    chatPrefs.getInt("read_count_${chatRoomId}_$userNameKey", 0)
+                }
+                val isChatRead = remember(chatRoomId, totalRoomMessages, FirebaseCloudSyncManager.globalCloudSyncTrigger.intValue) {
+                    chatPrefs.getBoolean("read_all_${chatRoomId}_$userNameKey", false)
+                }
+                val unreadChatMsgCount = if (isChatRead && totalRoomMessages <= currentReadCount) 0 else (totalRoomMessages - currentReadCount).coerceAtLeast(0)
 
                 Card(
                     shape = RoundedCornerShape(16.dp),
@@ -376,7 +349,23 @@ fun NotificationsCenterScreen(
                     elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clickable { activeGroupChatEvent = event }
+                        .clickable {
+                            val userName = if (isOwnerMode) "Admin Owner" else agentName
+                            val cPrefs = context.getSharedPreferences("azure_calendar_chat_reads", Context.MODE_PRIVATE)
+                            val sPrefs = context.getSharedPreferences("azure_calendar_event_reads", Context.MODE_PRIVATE)
+
+                            cPrefs.edit()
+                                .putInt("read_count_${chatRoomId}_$userName", totalRoomMessages)
+                                .putBoolean("read_all_${chatRoomId}_$userName", true)
+                                .apply()
+                            sPrefs.edit()
+                                .putBoolean("seen_event_${event.id}_$userName", true)
+                                .putBoolean("seen_event_${event.title}_$userName", true)
+                                .apply()
+                            FirebaseCloudSyncManager.notifyCloudUpdate()
+
+                            activeGroupChatEventId = event.id
+                        }
                 ) {
                     Column(
                         modifier = Modifier
@@ -450,64 +439,24 @@ fun NotificationsCenterScreen(
                             }
                         }
 
-                        // Automated Link Box
-                        Surface(
-                            shape = RoundedCornerShape(10.dp),
-                            color = Color(0xFFF3EDFD),
-                            border = BorderStroke(1.dp, BorderPurple),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 10.dp, vertical = 6.dp),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    modifier = Modifier.weight(1f)
-                                ) {
-                                    Icon(Icons.Default.Link, contentDescription = null, tint = PurplePrimary, modifier = Modifier.size(16.dp))
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Text(
-                                        text = event.eventLink,
-                                        fontSize = 11.sp,
-                                        color = PurplePrimary,
-                                        fontWeight = FontWeight.Medium,
-                                        maxLines = 1
-                                    )
-                                }
-
-                                IconButton(
-                                    onClick = {
-                                        clipboardManager.setText(AnnotatedString(event.eventLink))
-                                        Toast.makeText(context, "Event link copied!", Toast.LENGTH_SHORT).show()
-                                    },
-                                    modifier = Modifier.size(28.dp)
-                                ) {
-                                    Icon(Icons.Default.ContentCopy, contentDescription = "Copy Link", tint = PurplePrimary, modifier = Modifier.size(16.dp))
-                                }
-                            }
-                        }
-
-                        val chatRoomId = remember(event.id, event.title) {
-                            FirebaseCloudSyncManager.getNormalizedEventId(event.id, event.title)
-                        }
-                        val roomMessages = remember(chatRoomId, FirebaseCloudSyncManager.globalCloudSyncTrigger.intValue) {
-                            dbHelper.getChatMessagesForRoom(chatRoomId)
-                        }
-                        val chatPrefs = remember { context.getSharedPreferences("azure_calendar_chat_reads", Context.MODE_PRIVATE) }
-                        val currentReadCount = remember(chatRoomId, roomMessages.size) {
-                            chatPrefs.getInt("read_count_${chatRoomId}_$agentName", 0)
-                        }
-                        val unreadChatMsgCount = (roomMessages.size - currentReadCount).coerceAtLeast(0)
-
                         // Open Group Chat Button
                         Button(
                             onClick = {
-                                chatPrefs.edit().putInt("read_count_${chatRoomId}_$agentName", roomMessages.size).apply()
-                                activeGroupChatEvent = event
+                                val userName = if (isOwnerMode) "Admin Owner" else agentName
+                                val cPrefs = context.getSharedPreferences("azure_calendar_chat_reads", Context.MODE_PRIVATE)
+                                val sPrefs = context.getSharedPreferences("azure_calendar_event_reads", Context.MODE_PRIVATE)
+
+                                cPrefs.edit()
+                                    .putInt("read_count_${chatRoomId}_$userName", totalRoomMessages)
+                                    .putBoolean("read_all_${chatRoomId}_$userName", true)
+                                    .apply()
+                                sPrefs.edit()
+                                    .putBoolean("seen_event_${event.id}_$userName", true)
+                                    .putBoolean("seen_event_${event.title}_$userName", true)
+                                    .apply()
+                                FirebaseCloudSyncManager.notifyCloudUpdate()
+
+                                activeGroupChatEventId = event.id
                             },
                             shape = RoundedCornerShape(10.dp),
                             colors = ButtonDefaults.buttonColors(containerColor = PurplePrimary),
@@ -542,60 +491,35 @@ fun NotificationsCenterScreen(
                             }
                         }
 
-                        // Share / Delete for Owner
+                        // Delete Button for Owner
                         if (isOwnerMode) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            OutlinedButton(
+                                onClick = {
+                                    deletedEventIds.add(event.id)
+                                    deletedEventIds.add(event.title)
+                                    if (!isPreview) {
+                                        prefs.edit().putStringSet("deleted_ids", deletedEventIds.toSet()).apply()
+                                    }
+                                    dbHelper.deleteEventByIdOrTitle(event.id)
+                                    dbHelper.deleteEventByIdOrTitle(event.title)
+                                    FirebaseCloudSyncManager.deleteOwnerEventFromCloud(event.id, event.title)
+                                    Toast.makeText(context, "'${event.title}' deleted!", Toast.LENGTH_SHORT).show()
+                                },
+                                shape = RoundedCornerShape(10.dp),
+                                border = BorderStroke(1.dp, Color(0xFFE53935)),
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFFEBEE)),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(38.dp)
                             ) {
-                                OutlinedButton(
-                                    onClick = {
-                                        clipboardManager.setText(AnnotatedString(event.eventLink))
-                                        Toast.makeText(context, "Link copied! Send to ${event.targetAgent} to join.", Toast.LENGTH_SHORT).show()
-                                    },
-                                    shape = RoundedCornerShape(10.dp),
-                                    border = BorderStroke(1.dp, PurplePrimary),
-                                    modifier = Modifier
-                                        .weight(1f)
-                                        .height(38.dp)
-                                ) {
-                                    Icon(Icons.Default.Share, contentDescription = null, tint = PurplePrimary, modifier = Modifier.size(16.dp))
-                                    Spacer(modifier = Modifier.width(4.dp))
-                                    Text(
-                                        text = "Share Link",
-                                        fontSize = 12.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        color = PurplePrimary
-                                    )
-                                }
-
-                                OutlinedButton(
-                                    onClick = {
-                                        deletedEventIds.add(event.id)
-                                        deletedEventIds.add(event.title)
-                                        if (!isPreview) {
-                                            prefs.edit().putStringSet("deleted_ids", deletedEventIds.toSet()).apply()
-                                        }
-                                        dbHelper.deleteEventByIdOrTitle(event.id)
-                                        dbHelper.deleteEventByIdOrTitle(event.title)
-                                        FirebaseCloudSyncManager.deleteOwnerEventFromCloud(event.id, event.title)
-                                        Toast.makeText(context, "'${event.title}' deleted!", Toast.LENGTH_SHORT).show()
-                                    },
-                                    shape = RoundedCornerShape(10.dp),
-                                    border = BorderStroke(1.dp, Color(0xFFE53935)),
-                                    colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFE53935)),
-                                    modifier = Modifier
-                                        .weight(1f)
-                                        .height(38.dp)
-                                ) {
-                                    Icon(Icons.Default.Delete, contentDescription = "Delete Event", modifier = Modifier.size(16.dp))
-                                    Spacer(modifier = Modifier.width(4.dp))
-                                    Text(
-                                        text = "Delete Event",
-                                        fontSize = 12.sp,
-                                        fontWeight = FontWeight.Bold
-                                    )
-                                }
+                                Icon(Icons.Default.Delete, contentDescription = "Delete Event", tint = Color(0xFFE53935), modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text(
+                                    text = "Delete Event",
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color(0xFFE53935)
+                                )
                             }
                         }
                     }
@@ -714,11 +638,44 @@ fun NotificationsCenterScreen(
         )
     }
 
-    // Owner Create Event Dialog Popup with Automated Link Generation
+    // Owner Create Event Dialog Popup with Multi-Agent Selection
     if (showCreateDialog) {
+        val currentNowCal = java.util.Calendar.getInstance()
+        val currentMonthStr = monthsList.getOrElse(currentNowCal.get(java.util.Calendar.MONTH)) { "Nov" }
+        val currentDayNum = currentNowCal.get(java.util.Calendar.DAY_OF_MONTH)
+        val currentYearNum = currentNowCal.get(java.util.Calendar.YEAR)
+        val realTimeDefaultDate = "$currentMonthStr $currentDayNum, $currentYearNum"
+
+        val currentHour24 = currentNowCal.get(java.util.Calendar.HOUR_OF_DAY)
+        val isPmNow = currentHour24 >= 12
+        val currentHour12 = when {
+            currentHour24 == 0 -> 12
+            currentHour24 > 12 -> currentHour24 - 12
+            else -> currentHour24
+        }
+        val realTimeDefaultTime = "$currentHour12:00 ${if (isPmNow) "PM" else "AM"}"
+
         var newTitle by remember { mutableStateOf("") }
-        var newDate by remember { mutableStateOf("Sept 15, 2026") }
-        var newTime by remember { mutableStateOf("2:00 PM") }
+        var newDate by remember { mutableStateOf(realTimeDefaultDate) }
+        var newTime by remember { mutableStateOf(realTimeDefaultTime) }
+        var selectedTargetAgents by remember { mutableStateOf(setOf("All Agents")) }
+        var agentDropdownExpanded by remember { mutableStateOf(false) }
+
+        val availableAgentOptions = remember(showCreateDialog, FirebaseCloudSyncManager.globalCloudSyncTrigger.intValue) {
+            val deletedPrefs = context.getSharedPreferences("azure_calendar_deleted_agents", Context.MODE_PRIVATE)
+            val deletedSet = deletedPrefs.getStringSet("deleted_agent_keys", emptySet()).orEmpty()
+
+            val registered = dbHelper.getAllAgents()
+                .filter { agent ->
+                    val aName = (agent["name"] ?: "").trim().lowercase()
+                    val aEmail = (agent["email"] ?: "").trim().lowercase()
+                    aName.isNotBlank() && aName !in deletedSet && aEmail !in deletedSet
+                }
+                .mapNotNull { it["name"] }
+
+            val activeList = (listOf("All Agents") + registered).distinctBy { it.trim().lowercase() }
+            if (activeList.isEmpty()) listOf("All Agents") else activeList
+        }
 
         LaunchedEffect(newDateState) {
             if (newDateState.isNotBlank()) {
@@ -748,7 +705,7 @@ fun NotificationsCenterScreen(
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Text(text = "An automated join link will be generated for this event. Anyone with the link can join.", fontSize = 12.sp, color = TextMuted)
+                    Text(text = "Set title, date, time, and select agents who can join this event group chat:", fontSize = 12.sp, color = TextMuted)
 
                     OutlinedTextField(
                         value = newTitle,
@@ -759,7 +716,75 @@ fun NotificationsCenterScreen(
                         modifier = Modifier.fillMaxWidth()
                     )
 
+                    // Target Agents Multi-Select Dropdown
+                    ExposedDropdownMenuBox(
+                        expanded = agentDropdownExpanded,
+                        onExpandedChange = { agentDropdownExpanded = !agentDropdownExpanded },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        OutlinedTextField(
+                            value = if (selectedTargetAgents.contains("All Agents")) "All Agents" else selectedTargetAgents.joinToString(", "),
+                            onValueChange = {},
+                            readOnly = true,
+                            label = { Text("Select Target Agents (Multi-Select)") },
+                            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = agentDropdownExpanded) },
+                            singleLine = true,
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier.menuAnchor(ExposedDropdownMenuAnchorType.PrimaryNotEditable, true).fillMaxWidth()
+                        )
+                        ExposedDropdownMenu(
+                            expanded = agentDropdownExpanded,
+                            onDismissRequest = { agentDropdownExpanded = false }
+                        ) {
+                            availableAgentOptions.forEach { agentOpt ->
+                                val isChecked = selectedTargetAgents.contains(agentOpt)
+                                DropdownMenuItem(
+                                    text = {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                        ) {
+                                            Checkbox(
+                                                checked = isChecked,
+                                                onCheckedChange = null
+                                            )
+                                            Text(agentOpt, fontWeight = FontWeight.Medium)
+                                        }
+                                    },
+                                    onClick = {
+                                        val updated = selectedTargetAgents.toMutableSet()
+                                        if (agentOpt == "All Agents") {
+                                            updated.clear()
+                                            updated.add("All Agents")
+                                        } else {
+                                            updated.remove("All Agents")
+                                            if (isChecked) updated.remove(agentOpt) else updated.add(agentOpt)
+                                            if (updated.isEmpty()) updated.add("All Agents")
+                                        }
+                                        selectedTargetAgents = updated
+                                    }
+                                )
+                            }
 
+                            HorizontalDivider(color = Color(0xFFE8DEF8))
+
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 10.dp, vertical = 6.dp),
+                                contentAlignment = Alignment.CenterEnd
+                            ) {
+                                Button(
+                                    onClick = { agentDropdownExpanded = false },
+                                    shape = RoundedCornerShape(10.dp),
+                                    colors = ButtonDefaults.buttonColors(containerColor = PurplePrimary),
+                                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp)
+                                ) {
+                                    Text("Okay", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                                }
+                            }
+                        }
+                    }
 
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -826,55 +851,50 @@ fun NotificationsCenterScreen(
                         if (newTitle.isBlank()) {
                             Toast.makeText(context, "Please enter Event Title", Toast.LENGTH_SHORT).show()
                         } else {
+                            val finalTargetAgents = if (selectedTargetAgents.contains("All Agents")) "All Agents" else selectedTargetAgents.joinToString(", ")
+
                             val insertedRowId = dbHelper.insertEvent(
                                 title = newTitle,
                                 date = newDate,
                                 time = newTime,
-                                agent = "Owner",
+                                agent = finalTargetAgents,
                                 unit = "Event",
                                 shape = "Owner Event",
                                 color = 0L
                             )
 
                             val newId = if (insertedRowId > 0) insertedRowId.toString() else "evt-${System.currentTimeMillis()}"
-                            val generatedLink = "https://azurecalendar.app/event/join?id=$newId"
 
-                            val eventMap = mapOf(
+                            val eventMap = mapOf<String, Any>(
                                 "id" to newId,
                                 "title" to newTitle,
                                 "date" to newDate,
                                 "time" to newTime,
-                                "agent" to "Owner",
+                                "agent" to finalTargetAgents,
                                 "unit" to "Event",
                                 "shape" to "Owner Event",
-                                "color" to "0"
+                                "color" to 0L
                             )
                             FirebaseCloudSyncManager.pushEventToCloud(eventMap)
                             FirebaseCloudSyncManager.pushOwnerEventToCloud(
                                 id = newId,
                                 title = newTitle,
-                                description = "Event created by Owner for All Agents.",
+                                description = "Owner event created for $finalTargetAgents.",
                                 date = newDate,
                                 time = newTime,
                                 createdBy = "Owner",
-                                targetAgent = "All Agents",
-                                eventLink = generatedLink
+                                targetAgent = finalTargetAgents,
+                                eventLink = ""
                             )
 
-                            clipboardManager.setText(AnnotatedString(generatedLink))
-                            Toast.makeText(
-                                context,
-                                "Event created! Link copied: $generatedLink. Send this link for agents to join!",
-                                Toast.LENGTH_LONG
-                            ).show()
-
+                            Toast.makeText(context, "Event '$newTitle' created for $finalTargetAgents!", Toast.LENGTH_LONG).show()
                             showCreateDialog = false
                         }
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = PurplePrimary),
                     shape = RoundedCornerShape(12.dp)
                 ) {
-                    Text("Create & Generate Link", fontWeight = FontWeight.Bold)
+                    Text("Create Event", fontWeight = FontWeight.Bold)
                 }
             },
             dismissButton = {
@@ -936,11 +956,21 @@ fun EventGroupChatView(
             .sortedBy { it.id }
     }
 
-    LaunchedEffect(displayMessages.size) {
-        if (displayMessages.isNotEmpty()) {
-            val chatPrefs = context.getSharedPreferences("azure_calendar_chat_reads", Context.MODE_PRIVATE)
-            chatPrefs.edit().putInt("read_count_${chatRoomId}_$currentUserName", displayMessages.size).apply()
-        }
+    LaunchedEffect(displayMessages.size, chatRoomId) {
+        val userName = if (isOwnerMode) "Admin Owner" else currentUserName
+        val chatPrefs = context.getSharedPreferences("azure_calendar_chat_reads", Context.MODE_PRIVATE)
+        val seenPrefs = context.getSharedPreferences("azure_calendar_event_reads", Context.MODE_PRIVATE)
+
+        val totalMsgs = maxOf(displayMessages.size, 1)
+        chatPrefs.edit()
+            .putInt("read_count_${chatRoomId}_$userName", totalMsgs)
+            .putBoolean("read_all_${chatRoomId}_$userName", true)
+            .apply()
+        seenPrefs.edit()
+            .putBoolean("seen_event_${event.id}_$userName", true)
+            .putBoolean("seen_event_${event.title}_$userName", true)
+            .apply()
+        FirebaseCloudSyncManager.notifyCloudUpdate()
     }
 
     Column(
@@ -1010,7 +1040,7 @@ fun EventGroupChatView(
                         )
                         Spacer(modifier = Modifier.width(4.dp))
                         Text(
-                            text = "Admin, ${event.targetAgent}, Alex Reyes",
+                            text = "Admin, ${event.targetAgent}",
                             fontSize = 11.sp,
                             color = TextMuted,
                             maxLines = 1
@@ -1158,6 +1188,30 @@ fun EventGroupChatView(
                                 messageText = trimmedMsg,
                                 timestamp = timeFormatted
                             )
+
+                            val userNameKey = if (isOwnerMode) "Admin Owner" else currentUserName
+                            val chatPrefs = context.getSharedPreferences("azure_calendar_chat_reads", Context.MODE_PRIVATE)
+                            val seenPrefs = context.getSharedPreferences("azure_calendar_event_reads", Context.MODE_PRIVATE)
+                            val newTotal = displayMessages.size + 1
+                            chatPrefs.edit()
+                                .putInt("read_count_${chatRoomId}_$userNameKey", newTotal)
+                                .putBoolean("read_all_${chatRoomId}_$userNameKey", true)
+                                .apply()
+                            seenPrefs.edit()
+                                .putBoolean("seen_event_${event.id}_$userNameKey", true)
+                                .putBoolean("seen_event_${event.title}_$userNameKey", true)
+                                .apply()
+
+                            val allUserKeys = listOf("Admin Owner", "Alex Reyes", "sungit", "novie", "Gilbert", "Agent")
+                            val otherKeys = allUserKeys.filter { !it.equals(userNameKey, ignoreCase = true) }
+                            val editor = chatPrefs.edit()
+                            otherKeys.forEach { otherKey ->
+                                editor.putBoolean("read_all_${chatRoomId}_$otherKey", false)
+                            }
+                            editor.apply()
+
+                            FirebaseCloudSyncManager.notifyCloudUpdate()
+
                             messageInput = ""
                         }
                     },

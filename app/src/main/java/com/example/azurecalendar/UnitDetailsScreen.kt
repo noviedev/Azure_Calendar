@@ -827,14 +827,14 @@ fun UnitDetailsScreen(
 
                         // Push both the event and status update to Cloud Firestore!
                         FirebaseCloudSyncManager.pushEventToCloud(
-                            mapOf(
+                            mapOf<String, Any>(
                                 "title" to "Staycation - Extend Stay",
                                 "date" to newTargetDate,
                                 "time" to newTime,
                                 "agent" to creatorToSave,
                                 "unit" to unitName,
                                 "shape" to "Extend Stay",
-                                "color" to 0xFF9C27B0.toLong().toString()
+                                "color" to 0xFF9C27B0.toLong()
                             )
                         )
                         FirebaseCloudSyncManager.pushUnitStatusToCloud(unitName, "Extend Stay")

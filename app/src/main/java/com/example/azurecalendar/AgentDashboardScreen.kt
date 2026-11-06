@@ -57,7 +57,7 @@ data class AgentMetricsData(
 
 @Composable
 fun AgentDashboardScreen(
-    agentName: String = "Alex Reyes",
+    agentName: String = "Agent",
     @Suppress("UNUSED_PARAMETER") onNavigateToUnits: () -> Unit = {},
     onLogoutClick: () -> Unit = {}
 ) {
@@ -65,6 +65,7 @@ fun AgentDashboardScreen(
     val isPreview = LocalInspectionMode.current
     val joinedPrefs = remember { context.getSharedPreferences("azure_calendar_joined_events", Context.MODE_PRIVATE) }
     val deletedPrefs = remember { context.getSharedPreferences("azure_calendar_deleted_events", Context.MODE_PRIVATE) }
+    val dbHelper = remember { AzureDatabaseHelper(context) }
 
     var cloudOwnerEvents by remember { mutableStateOf<List<OwnerEventItem>>(emptyList()) }
 
@@ -77,16 +78,106 @@ fun AgentDashboardScreen(
         }
     }
 
-    val unreadEventCount = remember(cloudOwnerEvents, FirebaseCloudSyncManager.globalCloudSyncTrigger.intValue) {
-        if (isPreview) 1 else {
-            val joinedSet = joinedPrefs.getStringSet("joined_ids", emptySet()).orEmpty()
-            val deletedSet = deletedPrefs.getStringSet("deleted_ids", emptySet()).orEmpty()
-            cloudOwnerEvents.count { it.id !in joinedSet && it.id !in deletedSet && !it.isJoined }
+    var selectedTab by rememberSaveable { mutableIntStateOf(0) } // 0: Home, 1: Calendar, 2: Units, 3: Event, 4: Profile
+
+    val defaultOwnerEvents = remember {
+        listOf(
+            OwnerEventItem(
+                id = "evt_bukas_grouping",
+                title = "bukas grouping tayo",
+                description = "Owner event created for All Agents.",
+                date = "Nov 7, 2026",
+                time = "1:00 PM",
+                createdBy = "Owner",
+                targetAgent = "All Agents",
+                eventLink = "https://azurecalendar.app/event/join?id=evt_bukas_grouping"
+            ),
+            OwnerEventItem(
+                id = "evt_bai_gilbert",
+                title = "bai",
+                description = "Owner event created for Gilbert.",
+                date = "Nov 6, 2026",
+                time = "2:00 PM",
+                createdBy = "Owner",
+                targetAgent = "Gilbert",
+                eventLink = "https://azurecalendar.app/event/join?id=evt_bai_gilbert"
+            )
+        )
+    }
+
+    val allOwnerEvents = remember(cloudOwnerEvents, FirebaseCloudSyncManager.globalCloudSyncTrigger.intValue) {
+        val dbOwnerEvts = if (isPreview) emptyList() else {
+            dbHelper.getAllEvents().filter { evt ->
+                val title = evt["title"] ?: ""
+                val unit = evt["unit"] ?: ""
+                val shape = evt["shape"] ?: ""
+                val isStaycation = title.startsWith("Staycation", ignoreCase = true) || shape.contains("Check", ignoreCase = true) || shape.contains("Reserve", ignoreCase = true)
+                !isStaycation && (unit.equals("Event", ignoreCase = true) || shape.contains("Owner Event", ignoreCase = true))
+            }.map { evt ->
+                val evtId = evt["id"] ?: "0"
+                OwnerEventItem(
+                    id = evtId,
+                    title = evt["title"] ?: "Owner Event",
+                    description = "Created by Owner/Admin for Agents",
+                    date = evt["date"] ?: "Sept 15, 2026",
+                    time = evt["time"] ?: "2:00 PM",
+                    createdBy = "Owner",
+                    targetAgent = "All Agents",
+                    eventLink = "https://azurecalendar.app/event/join?id=$evtId"
+                )
+            }
+        }
+        (cloudOwnerEvents + dbOwnerEvts + defaultOwnerEvents).distinctBy { "${it.title.lowercase().trim()}_${it.date}_${it.time}" }
+    }
+
+    LaunchedEffect(selectedTab) {
+        if (selectedTab == 3 && allOwnerEvents.isNotEmpty()) {
+            val seenPrefs = context.getSharedPreferences("azure_calendar_event_reads", Context.MODE_PRIVATE)
+            val seenEditor = seenPrefs.edit()
+            allOwnerEvents.forEach { event ->
+                seenEditor.putBoolean("seen_event_${event.id}_$agentName", true)
+                seenEditor.putBoolean("seen_event_${event.title}_$agentName", true)
+            }
+            seenEditor.apply()
+            FirebaseCloudSyncManager.notifyCloudUpdate()
         }
     }
 
-    var selectedTab by rememberSaveable { mutableIntStateOf(0) } // 0: Home, 1: Calendar, 2: Units, 3: Event, 4: Profile
+    val totalUnreadBadgeCount = remember(allOwnerEvents, FirebaseCloudSyncManager.globalCloudSyncTrigger.intValue, selectedTab) {
+        if (isPreview || selectedTab == 3) 0 else {
+            val deletedSet = deletedPrefs.getStringSet("deleted_ids", emptySet()).orEmpty()
+            val chatPrefs = context.getSharedPreferences("azure_calendar_chat_reads", Context.MODE_PRIVATE)
+            val seenPrefs = context.getSharedPreferences("azure_calendar_event_reads", Context.MODE_PRIVATE)
+
+            val activeEvents = allOwnerEvents.filter {
+                it.id !in deletedSet && it.title !in deletedSet && !it.title.startsWith("Staycation", ignoreCase = true)
+            }
+
+            var unreadTotal = 0
+            activeEvents.forEach { event ->
+                val chatRoomId = FirebaseCloudSyncManager.getNormalizedEventId(event.id, event.title)
+                val dbMsgs = dbHelper.getChatMessagesForRoom(chatRoomId)
+                val memMsgs = EventChatRepository.getMessagesForEvent(chatRoomId, event.title, event.targetAgent)
+                val totalRoomMsgs = (dbMsgs + memMsgs).distinctBy { "${it.senderName.trim().lowercase()}_${it.messageText.trim()}_${it.timestamp}" }.size
+
+                val lastReadCount = chatPrefs.getInt("read_count_${chatRoomId}_$agentName", 0)
+                val isChatRead = chatPrefs.getBoolean("read_all_${chatRoomId}_$agentName", false)
+                val isSeen = seenPrefs.getBoolean("seen_event_${event.id}_$agentName", false) ||
+                             seenPrefs.getBoolean("seen_event_${event.title}_$agentName", false)
+
+                val unreadMsgs = if (isChatRead && totalRoomMsgs <= lastReadCount) 0 else (totalRoomMsgs - lastReadCount).coerceAtLeast(0)
+                val unreadEvt = if (!isSeen) 1 else 0
+
+                unreadTotal += (unreadMsgs + unreadEvt)
+            }
+
+            unreadTotal
+        }
+    }
+
     var showFullScheduleViewAll by remember { mutableStateOf(false) }
+
+    var eventTabResetTrigger by remember { mutableIntStateOf(0) }
 
     if (showFullScheduleViewAll) {
         FullScheduleViewAllScreen(
@@ -97,8 +188,13 @@ fun AgentDashboardScreen(
             bottomBar = {
                 AgentBottomNavigationBar(
                     selectedTab = selectedTab,
-                    unreadEventCount = unreadEventCount,
-                    onTabSelected = { selectedTab = it }
+                    unreadEventCount = totalUnreadBadgeCount,
+                    onTabSelected = { tab ->
+                        if (tab == 3) {
+                            eventTabResetTrigger++
+                        }
+                        selectedTab = tab
+                    }
                 )
             },
             containerColor = ScreenBg
@@ -116,7 +212,7 @@ fun AgentDashboardScreen(
                     )
                     1 -> CalendarTabContent(agentName = agentName, onNavigateToUnits = { selectedTab = 2 })
                     2 -> UnitsTabContent(agentName = agentName, onTabSelected = { selectedTab = it })
-                    3 -> NotificationsCenterScreen(isOwnerMode = false, agentName = agentName)
+                    3 -> NotificationsCenterScreen(isOwnerMode = false, agentName = agentName, resetTrigger = eventTabResetTrigger)
                     4 -> ProfileTabContent(
                         agentName = agentName,
                         isOwnerMode = false,
@@ -869,7 +965,7 @@ private fun CalendarTabContent(
                                     "agent" to agentName,
                                     "unit" to unitName,
                                     "shape" to shape,
-                                    "color" to colorLong.toString()
+                                    "color" to colorLong
                                 )
                                 FirebaseCloudSyncManager.pushEventToCloud(eventMap)
                             } else {
@@ -883,7 +979,7 @@ private fun CalendarTabContent(
                                     shape = shape,
                                     color = colorLong
                                 )
-                                val eventMap = mapOf(
+                                val eventMap = mapOf<String, Any>(
                                     "id" to newEvtId.toString(),
                                     "title" to "Staycation - $shape",
                                     "date" to finalTargetDate,
@@ -891,7 +987,7 @@ private fun CalendarTabContent(
                                     "agent" to agentName,
                                     "unit" to unitName,
                                     "shape" to shape,
-                                    "color" to colorLong.toString()
+                                    "color" to colorLong
                                 )
                                 FirebaseCloudSyncManager.pushEventToCloud(eventMap)
                             }
@@ -1199,52 +1295,56 @@ private fun BottomNavItem(
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    Column(
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center,
+    Surface(
+        onClick = onClick,
+        color = Color.Transparent,
+        shape = RoundedCornerShape(14.dp),
         modifier = modifier
-            .clip(RoundedCornerShape(14.dp))
-            .clickable(onClick = onClick)
-            .padding(vertical = 8.dp)
     ) {
-        BadgedBox(
-            badge = {
-                if (badgeCount > 0) {
-                    Badge(
-                        containerColor = Color(0xFFE53935),
-                        contentColor = Color.White
-                    ) {
-                        Text(
-                            text = if (badgeCount > 99) "99+" else "$badgeCount",
-                            fontSize = 10.sp,
-                            fontWeight = FontWeight.Bold
-                        )
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center,
+            modifier = Modifier.padding(vertical = 6.dp)
+        ) {
+            BadgedBox(
+                badge = {
+                    if (badgeCount > 0) {
+                        Badge(
+                            containerColor = Color(0xFFE53935),
+                            contentColor = Color.White
+                        ) {
+                            Text(
+                                text = if (badgeCount > 99) "99+" else "$badgeCount",
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
                     }
                 }
-            }
-        ) {
-            Box(
-                contentAlignment = Alignment.Center,
-                modifier = Modifier
-                    .size(36.dp)
-                    .clip(CircleShape)
-                    .background(if (isSelected) Color(0xFFF3EDFD) else Color.Transparent)
             ) {
-                Icon(
-                    imageVector = icon,
-                    contentDescription = label,
-                    tint = if (isSelected) PurplePrimary else Color.Gray,
-                    modifier = Modifier.size(22.dp)
-                )
+                Box(
+                    contentAlignment = Alignment.Center,
+                    modifier = Modifier
+                        .size(36.dp)
+                        .clip(CircleShape)
+                        .background(if (isSelected) Color(0xFFF3EDFD) else Color.Transparent)
+                ) {
+                    Icon(
+                        imageVector = icon,
+                        contentDescription = label,
+                        tint = if (isSelected) PurplePrimary else Color.Gray,
+                        modifier = Modifier.size(22.dp)
+                    )
+                }
             }
+            Spacer(modifier = Modifier.height(2.dp))
+            Text(
+                text = label,
+                fontSize = 11.sp,
+                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                color = if (isSelected) PurplePrimary else Color.Gray
+            )
         }
-        Spacer(modifier = Modifier.height(2.dp))
-        Text(
-            text = label,
-            fontSize = 11.sp,
-            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-            color = if (isSelected) PurplePrimary else Color.Gray
-        )
     }
 }
 
@@ -1297,6 +1397,7 @@ fun ProfileTabContent(
     onNavigateToInvoices: () -> Unit = {}
 ) {
     val context = LocalContext.current
+    val dbHelper = remember { AzureDatabaseHelper(context) }
     val isPreview = LocalInspectionMode.current
     val prefs = remember { context.getSharedPreferences("azure_calendar_profile_prefs", Context.MODE_PRIVATE) }
     val infoPrefs = remember { context.getSharedPreferences("azure_calendar_personal_info", Context.MODE_PRIVATE) }
@@ -1367,11 +1468,26 @@ fun ProfileTabContent(
     }
     var showPersonalInfoDialog by remember { mutableStateOf(false) }
 
-    var fullNameState by remember { mutableStateOf(if (isPreview) agentName else infoPrefs.getString("name_$agentName", agentName) ?: agentName) }
-    var emailState by remember { mutableStateOf(if (isPreview) defaultEmail else infoPrefs.getString("email_$agentName", defaultEmail) ?: defaultEmail) }
-    var phoneState by remember { mutableStateOf(if (isPreview) "+63 917 888 2468" else infoPrefs.getString("phone_$agentName", "+63 917 888 2468") ?: "+63 917 888 2468") }
-    var roleState by remember { mutableStateOf(if (isPreview) defaultRole else infoPrefs.getString("role_$agentName", defaultRole) ?: defaultRole) }
-    var genderState by remember { mutableStateOf(if (isPreview) "Female" else infoPrefs.getString("gender_$agentName", "Female") ?: "Female") }
+    val dbAgents = remember { dbHelper.getAllAgents() }
+    val matchedAgent = remember(agentName, dbAgents) {
+        dbAgents.find { isSameUnit(it["name"] ?: "", agentName) || (it["name"] ?: "").equals(agentName, ignoreCase = true) }
+    }
+
+    var fullNameState by remember(agentName) {
+        mutableStateOf(if (isPreview) agentName else matchedAgent?.get("name") ?: infoPrefs.getString("name_$agentName", infoPrefs.getString("name_Admin", agentName)) ?: agentName)
+    }
+    var emailState by remember(agentName) {
+        mutableStateOf(if (isPreview) defaultEmail else matchedAgent?.get("email") ?: infoPrefs.getString("email_$agentName", infoPrefs.getString("email_Admin", defaultEmail)) ?: defaultEmail)
+    }
+    var phoneState by remember(agentName) {
+        mutableStateOf(if (isPreview) "+63 917 888 2468" else matchedAgent?.get("phone")?.ifBlank { null } ?: infoPrefs.getString("phone_$agentName", infoPrefs.getString("phone_Admin", "+63 917 888 2468")) ?: "+63 917 888 2468")
+    }
+    var roleState by remember(agentName) {
+        mutableStateOf(if (isPreview) defaultRole else matchedAgent?.get("position") ?: infoPrefs.getString("role_$agentName", infoPrefs.getString("role_Admin", defaultRole)) ?: defaultRole)
+    }
+    var genderState by remember(agentName) {
+        mutableStateOf(if (isPreview) "Female" else matchedAgent?.get("gender")?.ifBlank { null } ?: infoPrefs.getString("gender_$agentName", infoPrefs.getString("gender_Admin", "Female")) ?: "Female")
+    }
 
     val galleryLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
@@ -1553,11 +1669,6 @@ fun ProfileTabContent(
                         icon = Icons.Default.Email,
                         title = "Email Settings",
                         onClick = { showEmailSettingsDialog = true }
-                    )
-                    ProfileMenuItem(
-                        icon = Icons.Default.ReceiptLong,
-                        title = "Invoices & Billing Records",
-                        onClick = { onNavigateToInvoices() }
                     )
                     if (isOwnerMode) {
                         ProfileMenuItem(
@@ -2552,7 +2663,7 @@ private fun UnitsTabContent(
                                 shape = shape,
                                 color = colorLong
                             )
-                            val eventMap = mapOf(
+                            val eventMap = mapOf<String, Any>(
                                 "id" to evtId.toString(),
                                 "title" to "Staycation - $shape",
                                 "date" to finalTargetDate,
@@ -2560,7 +2671,7 @@ private fun UnitsTabContent(
                                 "agent" to agentName,
                                 "unit" to unitName,
                                 "shape" to shape,
-                                "color" to colorLong.toString()
+                                "color" to colorLong
                             )
                             FirebaseCloudSyncManager.pushEventToCloud(eventMap)
                         } else {
@@ -2574,7 +2685,7 @@ private fun UnitsTabContent(
                                 shape = shape,
                                 color = colorLong
                             )
-                            val eventMap = mapOf(
+                            val eventMap = mapOf<String, Any>(
                                 "id" to newEvtId.toString(),
                                 "title" to "Staycation - $shape",
                                 "date" to finalTargetDate,
@@ -2582,7 +2693,7 @@ private fun UnitsTabContent(
                                 "agent" to agentName,
                                 "unit" to unitName,
                                 "shape" to shape,
-                                "color" to colorLong.toString()
+                                "color" to colorLong
                             )
                             FirebaseCloudSyncManager.pushEventToCloud(eventMap)
                         }

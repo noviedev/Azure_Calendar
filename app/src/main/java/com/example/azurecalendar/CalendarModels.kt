@@ -840,6 +840,7 @@ private fun CalendarLegendIndicator(color: Color, label: String) {
 @Composable
 fun CalendarBottomNavigationBar(
     selectedTab: Int = 1,
+    unreadEventCount: Int = 0,
     onTabSelected: (Int) -> Unit = {}
 ) {
     Box(
@@ -881,6 +882,7 @@ fun CalendarBottomNavigationBar(
                 icon = Icons.Default.Event,
                 label = "Event",
                 isSelected = selectedTab == 3,
+                badgeCount = unreadEventCount,
                 onClick = { onTabSelected(3) },
                 modifier = Modifier.weight(1f)
             )
@@ -895,43 +897,66 @@ fun CalendarBottomNavigationBar(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun BottomNavItem(
     icon: ImageVector,
     label: String,
     isSelected: Boolean,
+    badgeCount: Int = 0,
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    Column(
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center,
+    Surface(
+        onClick = onClick,
+        color = Color.Transparent,
+        shape = RoundedCornerShape(14.dp),
         modifier = modifier
-            .clip(RoundedCornerShape(14.dp))
-            .clickable(onClick = onClick)
-            .padding(vertical = 8.dp)
     ) {
-        Box(
-            contentAlignment = Alignment.Center,
-            modifier = Modifier
-                .size(36.dp)
-                .clip(CircleShape)
-                .background(if (isSelected) Color(0xFFF3EDFD) else Color.Transparent)
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center,
+            modifier = Modifier.padding(vertical = 6.dp)
         ) {
-            Icon(
-                imageVector = icon,
-                contentDescription = label,
-                tint = if (isSelected) AzureCalendarColors.PurplePrimary else Color.Gray,
-                modifier = Modifier.size(22.dp)
+            BadgedBox(
+                badge = {
+                    if (badgeCount > 0) {
+                        Badge(
+                            containerColor = Color(0xFFE53935),
+                            contentColor = Color.White
+                        ) {
+                            Text(
+                                text = if (badgeCount > 99) "99+" else "$badgeCount",
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+                }
+            ) {
+                Box(
+                    contentAlignment = Alignment.Center,
+                    modifier = Modifier
+                        .size(36.dp)
+                        .clip(CircleShape)
+                        .background(if (isSelected) Color(0xFFF3EDFD) else Color.Transparent)
+                ) {
+                    Icon(
+                        imageVector = icon,
+                        contentDescription = label,
+                        tint = if (isSelected) AzureCalendarColors.PurplePrimary else Color.Gray,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+            }
+            Spacer(modifier = Modifier.height(2.dp))
+            Text(
+                text = label,
+                fontSize = 11.sp,
+                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                color = if (isSelected) AzureCalendarColors.PurplePrimary else Color.Gray
             )
         }
-        Spacer(modifier = Modifier.height(2.dp))
-        Text(
-            text = label,
-            fontSize = 11.sp,
-            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-            color = if (isSelected) AzureCalendarColors.PurplePrimary else Color.Gray
-        )
     }
 }
 

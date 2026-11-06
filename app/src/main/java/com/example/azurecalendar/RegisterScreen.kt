@@ -28,6 +28,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -37,7 +38,7 @@ import com.example.azurecalendar.ui.theme.AzureCalendarTheme
 @Composable
 fun RegisterScreen(
     onBackClick: () -> Unit,
-    onRegisterSubmit: (fullName: String, email: String, password: String, phoneNumber: String) -> Unit,
+    onRegisterSubmit: (fullName: String, email: String, password: String, phoneNumber: String, gender: String) -> Unit,
     onNavigateToLogin: () -> Unit,
     @Suppress("UNUSED_PARAMETER") onFacebookSignUpClick: () -> Unit = {},
     onGoogleSignUpClick: () -> Unit = {}
@@ -50,6 +51,9 @@ fun RegisterScreen(
     var age by remember { mutableStateOf("") }
     var selectedGender by remember { mutableStateOf("") }
     var phoneNumber by remember { mutableStateOf("") }
+
+    var termsAccepted by remember { mutableStateOf(false) }
+    var showTermsDialog by remember { mutableStateOf(false) }
 
     var passwordVisible by remember { mutableStateOf(false) }
     var confirmPasswordVisible by remember { mutableStateOf(false) }
@@ -311,27 +315,85 @@ fun RegisterScreen(
                 modifier = Modifier.fillMaxWidth()
             )
 
-            Spacer(modifier = Modifier.height(18.dp))
+            Spacer(modifier = Modifier.height(12.dp))
+
+            // Terms & Conditions and Privacy Policy Checkbox Row
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Checkbox(
+                    checked = termsAccepted,
+                    onCheckedChange = { termsAccepted = it },
+                    colors = CheckboxDefaults.colors(
+                        checkedColor = primaryPurple,
+                        uncheckedColor = Color(0xFF6B4AA0)
+                    )
+                )
+                Spacer(modifier = Modifier.width(4.dp))
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.clickable { termsAccepted = !termsAccepted }
+                ) {
+                    Text(
+                        text = "I agree to ",
+                        fontSize = 11.sp,
+                        color = Color(0xFF4A4A4A)
+                    )
+                    Text(
+                        text = "Terms & Conditions",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = primaryPurple,
+                        textDecoration = TextDecoration.Underline,
+                        modifier = Modifier.clickable { showTermsDialog = true }
+                    )
+                    Text(
+                        text = " & ",
+                        fontSize = 11.sp,
+                        color = Color(0xFF4A4A4A)
+                    )
+                    Text(
+                        text = "Privacy Policy",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = primaryPurple,
+                        textDecoration = TextDecoration.Underline,
+                        modifier = Modifier.clickable { showTermsDialog = true }
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(14.dp))
 
             // Register Account Action Button
             Button(
                 onClick = {
-                    if (email.isBlank() || password.isBlank()) {
+                    if (!termsAccepted) {
+                        Toast.makeText(context, "Please agree to the Terms & Conditions and Privacy Policy to proceed.", Toast.LENGTH_LONG).show()
+                    } else if (email.isBlank() || password.isBlank()) {
                         Toast.makeText(context, "Please enter your email and password", Toast.LENGTH_SHORT).show()
                     } else if (password != confirmPassword && confirmPassword.isNotBlank()) {
                         Toast.makeText(context, "Passwords do not match", Toast.LENGTH_SHORT).show()
                     } else {
                         val targetPhone = phoneNumber.ifBlank { "+63 917 888 2468" }
+                        val targetGender = selectedGender.ifBlank { "Female" }
                         onRegisterSubmit(
                             fullName.ifBlank { "New User" },
                             email.ifBlank { "user@azure.com" },
                             password.ifBlank { "Password123!" },
-                            targetPhone
+                            targetPhone,
+                            targetGender
                         )
                     }
                 },
+                enabled = termsAccepted,
                 shape = RoundedCornerShape(14.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = primaryPurple),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = primaryPurple,
+                    disabledContainerColor = Color(0xFFCCC2DC),
+                    disabledContentColor = Color.White
+                ),
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(48.dp)
@@ -365,6 +427,96 @@ fun RegisterScreen(
             }
         }
     }
+
+    if (showTermsDialog) {
+        AlertDialog(
+            onDismissRequest = { showTermsDialog = false },
+            title = {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(Icons.Default.VerifiedUser, contentDescription = null, tint = primaryPurple, modifier = Modifier.size(24.dp))
+                    Text(
+                        text = "Terms & Privacy Policy",
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color(0xFF1E1045)
+                    )
+                }
+            },
+            text = {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Text(
+                        text = "1. Acceptance of Terms",
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = primaryPurple
+                    )
+                    Text(
+                        text = "By creating an account on Azure Calendar / TimeTree, you agree to comply with our platform policies, booking rules, and user conduct standards.",
+                        fontSize = 12.sp,
+                        color = Color(0xFF4A4A4A),
+                        lineHeight = 16.sp
+                    )
+
+                    HorizontalDivider(color = Color(0xFFE8DEF8))
+
+                    Text(
+                        text = "2. Privacy & Data Protection",
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = primaryPurple
+                    )
+                    Text(
+                        text = "Your personal information (name, email, phone number, gender, and booking records) is securely stored and encrypted. We do not sell or share your personal data with third-party advertisers.",
+                        fontSize = 12.sp,
+                        color = Color(0xFF4A4A4A),
+                        lineHeight = 16.sp
+                    )
+
+                    HorizontalDivider(color = Color(0xFFE8DEF8))
+
+                    Text(
+                        text = "3. Booking & Cancellation Rules",
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = primaryPurple
+                    )
+                    Text(
+                        text = "All unit staycation bookings, reservations, and tags created by owners or agents are subject to real-time status tracking and check-in date rules.",
+                        fontSize = 12.sp,
+                        color = Color(0xFF4A4A4A),
+                        lineHeight = 16.sp
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        termsAccepted = true
+                        showTermsDialog = false
+                    },
+                    shape = RoundedCornerShape(10.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = primaryPurple)
+                ) {
+                    Text("Accept & Close", fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showTermsDialog = false }) {
+                    Text("Close", color = Color.Gray)
+                }
+            },
+            containerColor = Color.White,
+            shape = RoundedCornerShape(20.dp)
+        )
+    }
 }
 
 @Preview(showBackground = true)
@@ -373,7 +525,7 @@ fun RegisterScreenPreview() {
     AzureCalendarTheme {
         RegisterScreen(
             onBackClick = {},
-            onRegisterSubmit = { _, _, _, _ -> },
+            onRegisterSubmit = { _, _, _, _, _ -> },
             onNavigateToLogin = {},
             onFacebookSignUpClick = {},
             onGoogleSignUpClick = {}
