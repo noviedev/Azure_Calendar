@@ -26,8 +26,10 @@ import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -47,6 +49,18 @@ private val CardBg = Color(0xFFFFFFFF)
 private val TextDark = Color(0xFF2C1A36)
 private val TextMuted = Color(0xFF7B6287)
 private val BorderPurple = Color(0xFFE0D0EC)
+
+fun parseMonthIndex(monthStr: String): Int {
+    if (monthStr.isBlank()) return java.util.Calendar.getInstance().get(java.util.Calendar.MONTH)
+    val monthMap = mapOf(
+        "jan" to 0, "feb" to 1, "mar" to 2, "apr" to 3, "may" to 4, "jun" to 5,
+        "jul" to 6, "aug" to 7, "sep" to 8, "sept" to 8, "oct" to 9, "nov" to 10, "dec" to 11,
+        "january" to 0, "february" to 1, "march" to 2, "april" to 3, "june" to 5,
+        "july" to 6, "august" to 7, "september" to 8, "october" to 9, "november" to 10, "december" to 11
+    )
+    return monthMap.entries.find { monthStr.contains(it.key, ignoreCase = true) }?.value
+        ?: java.util.Calendar.getInstance().get(java.util.Calendar.MONTH)
+}
 
 fun isDateCoveredByEvent(evtDate: String, dayNumber: Int, currentMonthName: String = "", currentYearNumber: Int = 0): Boolean {
     if (evtDate.isBlank()) return false
@@ -113,9 +127,14 @@ fun isDateCoveredByEvent(evtDate: String, dayNumber: Int, currentMonthName: Stri
 }
 
 fun isSameUnit(unit1: String, unit2: String): Boolean {
-    if (unit1.isEmpty() || unit2.isEmpty()) return false
+    if (unit1.isBlank() || unit2.isBlank()) return false
+    val isGeneral1 = unit1.equals("Event", ignoreCase = true) || unit1.contains("Meeting", ignoreCase = true) || unit1.contains("Owner Event", ignoreCase = true)
+    val isGeneral2 = unit2.equals("Event", ignoreCase = true) || unit2.contains("Meeting", ignoreCase = true) || unit2.contains("Owner Event", ignoreCase = true)
+    if (isGeneral1 || isGeneral2) return false
+
     val clean1 = unit1.replace("Unit", "", ignoreCase = true).trim()
     val clean2 = unit2.replace("Unit", "", ignoreCase = true).trim()
+    if (clean1.isBlank() || clean2.isBlank()) return false
     return clean1.equals(clean2, ignoreCase = true)
 }
 
@@ -168,14 +187,23 @@ fun UnitsDirectoryScreen(
     val shortMonthName = monthsList[selectedMonthIndex].take(3)
 
     var showDatePickerDialog by remember { mutableStateOf(false) }
-    var searchQuery by remember { mutableStateOf("") }
-    var selectedFilter by remember { mutableStateOf("All") }
+    var searchQuery by rememberSaveable { mutableStateOf("") }
+    var selectedFilter by rememberSaveable { mutableStateOf("All") }
+    val listState = rememberLazyListState()
     val filters = listOf("All", "Available", "Check-in", "Reserved", "Rented", "Under Maintenance", "Not Available")
 
     val dbEventsState = remember { mutableStateOf<List<Map<String, String>>>(emptyList()) }
     val dbUnitsState = remember { mutableStateOf<List<Map<String, Any>>>(emptyList()) }
 
-    LaunchedEffect(Unit, selectedDayNumber, selectedMonthIndex, selectedYearNumber, FirebaseCloudSyncManager.globalCloudSyncTrigger.intValue) {
+    var timeTrigger by remember { mutableIntStateOf(0) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            kotlinx.coroutines.delay(15000)
+            timeTrigger++
+        }
+    }
+
+    LaunchedEffect(Unit, selectedDayNumber, selectedMonthIndex, selectedYearNumber, timeTrigger, FirebaseCloudSyncManager.globalCloudSyncTrigger.intValue) {
         dbEventsState.value = dbHelper.getAllEvents()
         dbUnitsState.value = dbHelper.getAllUnits()
     }
@@ -193,23 +221,29 @@ fun UnitsDirectoryScreen(
             UnitCatalogItem("default-4", "Unit 06D", "Azure Tower", "1 Bedroom", "Available", R.drawable.img)
         )
 
-        val customUnitsFromDb = dbUnitsState.value.mapIndexed { idx, dbMap ->
-            val num = dbMap["unitNumber"]?.toString() ?: "Unit ${idx + 1}"
-            val tower = dbMap["tower"]?.toString() ?: "Azure Tower"
-            val status = dbMap["status"]?.toString() ?: "Available"
-            val imageUri = dbMap["image_uri"]?.toString()
-            val desc = dbMap["description"]?.toString() ?: "1 Bedroom"
-            val unitName = if (num.contains("Unit", ignoreCase = true)) num else "Unit $num"
-            UnitCatalogItem(
-                id = "db-${idx + 1}",
-                unitNumber = unitName,
-                tower = tower,
-                description = desc,
-                status = status,
-                imageResId = R.drawable.img,
-                imageUri = imageUri
-            )
-        }
+        val customUnitsFromDb = dbUnitsState.value
+            .filter { dbMap ->
+                val num = dbMap["unitNumber"]?.toString() ?: ""
+                val clean = num.replace("Unit", "", ignoreCase = true).trim()
+                clean.isNotBlank() && !clean.equals("Event", ignoreCase = true) && !clean.contains("Meeting", ignoreCase = true) && !clean.contains("Owner Event", ignoreCase = true)
+            }
+            .mapIndexed { idx, dbMap ->
+                val num = dbMap["unitNumber"]?.toString() ?: "Unit ${idx + 1}"
+                val tower = dbMap["tower"]?.toString() ?: "Azure Tower"
+                val status = dbMap["status"]?.toString() ?: "Available"
+                val imageUri = dbMap["image_uri"]?.toString()
+                val desc = dbMap["description"]?.toString() ?: "1 Bedroom"
+                val unitName = if (num.contains("Unit", ignoreCase = true)) num else "Unit $num"
+                UnitCatalogItem(
+                    id = "db-${idx + 1}",
+                    unitNumber = unitName,
+                    tower = tower,
+                    description = desc,
+                    status = status,
+                    imageResId = R.drawable.img,
+                    imageUri = imageUri
+                )
+            }
 
         val allUnitsList = (customUnitsFromDb + defaultUnitsList)
             .distinctBy { it.unitNumber.replace("Unit", "", ignoreCase = true).trim() }
@@ -220,14 +254,17 @@ fun UnitsDirectoryScreen(
         allUnitsList.map { unitItem ->
             val matchingEvent = dbEventsState.value.find { evt ->
                 val evtDate = evt["date"] ?: ""
+                val evtTime = evt["time"] ?: "12:00 PM"
                 val evtUnit = evt["unit"] ?: ""
 
                 val evtYear = Regex("\\b20\\d{2}\\b").find(evtDate)?.value?.toIntOrNull()
                 val yearMatches = evtYear == null || evtYear == selectedYearNumber
 
                 val dateMatches = isDateCoveredByEvent(evtDate, selectedDayNumber, shortMonthName, selectedYearNumber)
+                val isExpired = FirebaseCloudSyncManager.isEventDateExpired(evtDate, evtTime)
                 val unitMatches = isSameUnit(evtUnit, unitItem.unitNumber)
-                yearMatches && dateMatches && unitMatches
+
+                yearMatches && dateMatches && !isExpired && unitMatches
             }
 
             val dynamicStatus = when {
@@ -236,14 +273,21 @@ fun UnitsDirectoryScreen(
                     val title = matchingEvent["title"] ?: ""
                     val combined = "$shape $title"
                     when {
+                        combined.contains("Not", ignoreCase = true) || combined.contains("Star", ignoreCase = true) -> "Not Available"
                         combined.contains("Check", ignoreCase = true) || combined.contains("Heart", ignoreCase = true) -> "Check-in"
                         combined.contains("Reserve", ignoreCase = true) || combined.contains("Diamond", ignoreCase = true) -> "Reserved"
                         combined.contains("Maintenance", ignoreCase = true) || combined.contains("Circle", ignoreCase = true) -> "Under Maintenance"
-                        combined.contains("Not", ignoreCase = true) || combined.contains("Star", ignoreCase = true) -> "Not Available"
-                        else -> shape.ifBlank { unitItem.status.ifBlank { "Available" } }
+                        else -> shape.ifBlank { "Available" }
                     }
                 }
-                else -> unitItem.status.ifBlank { "Available" }
+                else -> {
+                    val master = unitItem.status
+                    if (master.contains("Maintenance", ignoreCase = true) || master.contains("Rented", ignoreCase = true) || master.contains("Not Available", ignoreCase = true)) {
+                        master
+                    } else {
+                        "Available"
+                    }
+                }
             }
 
             unitItem.copy(status = dynamicStatus)
@@ -265,6 +309,7 @@ fun UnitsDirectoryScreen(
     }
 
     LazyColumn(
+        state = listState,
         modifier = Modifier
             .fillMaxSize()
             .background(ScreenBg)

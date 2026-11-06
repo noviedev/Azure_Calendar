@@ -69,14 +69,22 @@ object EmailTemplateHelper {
         dateText: String = "Sept 11, 2026",
         amountText: String = "₱2,500.00"
     ) {
-        val subject = "Azure Calendar Booking Confirmation - $unitName ($statusLabel)"
+        val isRevenueBooking = statusLabel.contains("Check", ignoreCase = true) ||
+                               statusLabel.contains("Heart", ignoreCase = true) ||
+                               statusLabel.contains("Reserve", ignoreCase = true) ||
+                               statusLabel.contains("Diamond", ignoreCase = true) ||
+                               statusLabel.contains("Extend", ignoreCase = true)
+
+        val priceSection = if (isRevenueBooking) "Total Rate / Price: $amountText\n" else ""
+
+        val subject = "Azure Calendar Status Update - $unitName ($statusLabel)"
         val bodyText = """
 Hello $agentName & Owner,
 
-A new unit booking tag has been successfully registered in the Azure Calendar system.
+A unit status update has been successfully processed in the Azure Calendar system.
 
 --------------------------------------------------
-BOOKING CONFIRMATION DETAILS
+BOOKING & STATUS DETAILS
 --------------------------------------------------
 Unit Number: $unitName
 Booking Category / Status: $statusLabel
@@ -84,10 +92,9 @@ Booking Date: $dateText
 Assigned Agent: $agentName
 Agent Email: $agentEmail
 Owner Email: $ownerEmail
-Total Rate / Price: $amountText
---------------------------------------------------
+${priceSection}--------------------------------------------------
 
-This email confirmation is automatically routed to both the Owner and the booking Agent.
+This notification is automatically routed to both the Owner and the booking Agent.
 
 Best regards,
 Azure Calendar Management System

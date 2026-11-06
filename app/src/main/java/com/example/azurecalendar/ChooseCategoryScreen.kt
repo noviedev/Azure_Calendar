@@ -18,6 +18,7 @@ import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.filled.AccessTime
 import androidx.compose.material.icons.filled.DateRange
 import androidx.compose.material.icons.filled.HourglassTop
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -53,8 +54,9 @@ fun ChooseCategoryScreen(
     selectedDateText: String = "Sept 1, 2026",
     initialUnitName: String = "Unit 12A",
     onBackClick: () -> Unit = {},
-    onSaveClick: (shape: String, color: Color, unitName: String, dateText: String) -> Unit = { _, _, _, _ -> }
+    onSaveClick: (shape: String, color: Color, unitName: String, dateText: String, checkInTimeText: String) -> Unit = { _, _, _, _, _ -> }
 ) {
+    val context = LocalContext.current
     val unitOptions = listOf("Unit 12A", "Unit 15B", "Unit 08C", "Unit 06D")
 
     val initialUnitIdx = remember(initialUnitName) {
@@ -617,28 +619,66 @@ fun ChooseCategoryScreen(
                 .padding(bottom = 20.dp)
         ) {
             val selectedShape = shapes[selectedShapeIndex]
+            val context = LocalContext.current
+
+            val isCheckInDatePast = remember(checkInMonth, checkInDay, checkInYear) {
+                val selectedCal = java.util.Calendar.getInstance().apply {
+                    clear()
+                    val mIdx = monthNamesList.indexOf(checkInMonth).let { if (it != -1) it else 9 }
+                    set(checkInYear, mIdx, checkInDay)
+                }
+                val todayCal = java.util.Calendar.getInstance().apply {
+                    set(java.util.Calendar.HOUR_OF_DAY, 0)
+                    set(java.util.Calendar.MINUTE, 0)
+                    set(java.util.Calendar.SECOND, 0)
+                    set(java.util.Calendar.MILLISECOND, 0)
+                }
+                selectedCal.before(todayCal)
+            }
 
             Button(
                 onClick = {
-                    onSaveClick(
-                        selectedShape.statusLabel,
-                        selectedShape.color,
-                        initialUnitName.ifBlank { unitOptions.getOrElse(selectedUnitIndex) { "Unit 12A" } },
-                        currentFormattedDate
-                    )
+                    if (isCheckInDatePast) {
+                        Toast.makeText(context, "Booking is disabled for past dates! Please select today's date or a future date.", Toast.LENGTH_LONG).show()
+                    } else {
+                        onSaveClick(
+                            selectedShape.statusLabel,
+                            selectedShape.color,
+                            initialUnitName.ifBlank { unitOptions.getOrElse(selectedUnitIndex) { "Unit 12A" } },
+                            currentFormattedDate,
+                            checkInTime
+                        )
+                    }
                 },
+                enabled = !isCheckInDatePast,
                 shape = RoundedCornerShape(16.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = PurplePrimary),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = PurplePrimary,
+                    disabledContainerColor = Color(0xFFE0E0E0),
+                    disabledContentColor = Color(0xFF9E9E9E)
+                ),
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(52.dp)
             ) {
-                Text(
-                    text = "Save Tag ($currentFormattedDate)",
-                    fontSize = 14.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = Color.White
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (isCheckInDatePast) {
+                        Icon(Icons.Default.Lock, contentDescription = "Past Date Blocked", modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "Booking Blocked (Past Date)",
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    } else {
+                        Text(
+                            text = "Save Tag ($currentFormattedDate)",
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White
+                        )
+                    }
+                }
             }
         }
     }
@@ -788,20 +828,45 @@ fun ChooseCategoryScreen(
                             } else {
                                 val dayNum = index - leadingOffset + 1
                                 val isSelected = dayNum == tempSelectedDay
+
+                                val isCellPast = remember(dayNum, monthIdx, activePickerYear) {
+                                    val cellCal = java.util.Calendar.getInstance().apply {
+                                        clear()
+                                        set(activePickerYear, monthIdx, dayNum)
+                                    }
+                                    val todayCal = java.util.Calendar.getInstance().apply {
+                                        set(java.util.Calendar.HOUR_OF_DAY, 0)
+                                        set(java.util.Calendar.MINUTE, 0)
+                                        set(java.util.Calendar.SECOND, 0)
+                                        set(java.util.Calendar.MILLISECOND, 0)
+                                    }
+                                    cellCal.before(todayCal)
+                                }
+
                                 Surface(
                                     shape = CircleShape,
                                     color = if (isSelected) PurplePrimary else Color.Transparent,
                                     modifier = Modifier
                                         .size(32.dp)
                                         .clip(CircleShape)
-                                        .clickable { tempSelectedDay = dayNum }
+                                        .clickable {
+                                            if (isCellPast) {
+                                                Toast.makeText(context, "Past dates cannot be selected for booking.", Toast.LENGTH_SHORT).show()
+                                            } else {
+                                                tempSelectedDay = dayNum
+                                            }
+                                        }
                                 ) {
                                     Box(contentAlignment = Alignment.Center) {
                                         Text(
                                             text = dayNum.toString(),
                                             fontSize = 13.sp,
                                             fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                                            color = if (isSelected) Color.White else TextDark
+                                            color = when {
+                                                isSelected -> Color.White
+                                                isCellPast -> Color.LightGray
+                                                else -> TextDark
+                                            }
                                         )
                                     }
                                 }

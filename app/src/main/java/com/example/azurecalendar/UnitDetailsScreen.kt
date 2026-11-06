@@ -75,26 +75,36 @@ fun UnitDetailsScreen(
     val currentRealDay = realTimeCal.get(java.util.Calendar.DAY_OF_MONTH)
 
     val activeMonth = remember(initialMonthName) {
-        if (initialMonthName == "Sept" || initialMonthName.isBlank()) currentRealMonth else initialMonthName
+        if (initialMonthName.isBlank()) currentRealMonth else initialMonthName
     }
     val activeYear = remember(initialYearNumber) {
-        if (initialYearNumber == 2026 && initialMonthName == "Sept") currentRealYear else initialYearNumber
+        if (initialYearNumber > 2020) initialYearNumber else currentRealYear
     }
     val activeCheckIn = remember(initialCheckInDay) {
-        if (initialCheckInDay == 11) currentRealDay else initialCheckInDay
+        if (initialCheckInDay > 0) initialCheckInDay else currentRealDay
+    }
+
+    var timeTrigger by remember { mutableIntStateOf(0) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            kotlinx.coroutines.delay(15000)
+            timeTrigger++
+        }
     }
 
     // Keep status and date coverage updated automatically when tags or cloud sync changes
-    LaunchedEffect(syncTrigger, unitName, activeCheckIn, activeMonth, activeYear) {
+    LaunchedEffect(syncTrigger, timeTrigger, unitName, activeCheckIn, activeMonth, activeYear) {
         val dbHelper = AzureDatabaseHelper(context)
 
         val allEvents = dbHelper.getAllEvents()
         val matchingEvent = allEvents.find { evt ->
             val evtDate = evt["date"] ?: ""
+            val evtTime = evt["time"] ?: "12:00 PM"
             val evtUnit = evt["unit"] ?: ""
             val unitMatches = isSameUnit(evtUnit, unitName)
             val dateMatches = isDateCoveredByEvent(evtDate, activeCheckIn, activeMonth)
-            unitMatches && dateMatches
+            val isExpired = FirebaseCloudSyncManager.isEventDateExpired(evtDate, evtTime)
+            unitMatches && dateMatches && !isExpired
         }
 
         if (matchingEvent != null) {
@@ -117,16 +127,17 @@ fun UnitDetailsScreen(
                 val uNum = it["unitNumber"]?.toString() ?: ""
                 isSameUnit(uNum, unitName)
             }
-            if (match != null) {
-                val raw = match["status"]?.toString() ?: "Available"
-                currentStatus = raw.ifBlank { "Available" }
+            val raw = match?.get("status")?.toString() ?: "Available"
+            currentStatus = if (raw.contains("Maintenance", ignoreCase = true) || raw.contains("Rented", ignoreCase = true) || raw.contains("Not Available", ignoreCase = true)) {
+                raw
+            } else {
+                "Available"
             }
         }
     }
 
     val maxDaysInActiveMonth = remember(activeMonth, activeYear) {
-        val monthsList = listOf("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec")
-        val monthIdx = monthsList.indexOfFirst { activeMonth.contains(it, ignoreCase = true) }.let { if (it != -1) it else 9 }
+        val monthIdx = parseMonthIndex(activeMonth)
         val cal = java.util.Calendar.getInstance().apply {
             clear()
             set(java.util.Calendar.YEAR, activeYear)
@@ -140,6 +151,21 @@ fun UnitDetailsScreen(
     var checkOutDay by remember(activeCheckIn, maxDaysInActiveMonth) { mutableIntStateOf((activeCheckIn + 2).coerceAtMost(maxDaysInActiveMonth)) }
     var monthName by remember(activeMonth) { mutableStateOf(activeMonth) }
     var yearNumber by remember(activeYear) { mutableIntStateOf(activeYear) }
+
+    val isSelectedDateInPast = remember(activeCheckIn, activeMonth, activeYear) {
+        val selCal = java.util.Calendar.getInstance().apply {
+            clear()
+            val mIdx = parseMonthIndex(activeMonth)
+            set(activeYear, mIdx, activeCheckIn)
+        }
+        val todayCal = java.util.Calendar.getInstance().apply {
+            set(java.util.Calendar.HOUR_OF_DAY, 0)
+            set(java.util.Calendar.MINUTE, 0)
+            set(java.util.Calendar.SECOND, 0)
+            set(java.util.Calendar.MILLISECOND, 0)
+        }
+        selCal.before(todayCal)
+    }
 
     val shortM = monthName.take(3)
     @Suppress("UNUSED_VARIABLE")
@@ -533,20 +559,34 @@ fun UnitDetailsScreen(
 
             if (isAvailableForCoverage) {
                 Button(
-                    onClick = { onBookNowClick(fullCoverageRange) },
+                    onClick = {
+                        if (isSelectedDateInPast) {
+                            Toast.makeText(context, "Booking is disabled for past dates! Please select today's date or a future date.", Toast.LENGTH_LONG).show()
+                        } else {
+                            onBookNowClick(fullCoverageRange)
+                        }
+                    },
+                    enabled = !isSelectedDateInPast,
                     shape = RoundedCornerShape(16.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = PurplePrimary),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = PurplePrimary,
+                        disabledContainerColor = Color(0xFFE0E0E0),
+                        disabledContentColor = Color(0xFF9E9E9E)
+                    ),
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(48.dp)
                 ) {
-                    Icon(Icons.Default.BookmarkAdd, contentDescription = "Book Now", modifier = Modifier.size(18.dp))
+                    Icon(
+                        imageVector = if (isSelectedDateInPast) Icons.Default.Lock else Icons.Default.BookmarkAdd,
+                        contentDescription = "Book Now",
+                        modifier = Modifier.size(18.dp)
+                    )
                     Spacer(modifier = Modifier.width(6.dp))
                     Text(
-                        text = "Book Now",
+                        text = if (isSelectedDateInPast) "Booking Blocked (Past Date)" else "Book Now",
                         fontSize = 14.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = Color.White
+                        fontWeight = FontWeight.Bold
                     )
                 }
             } else {

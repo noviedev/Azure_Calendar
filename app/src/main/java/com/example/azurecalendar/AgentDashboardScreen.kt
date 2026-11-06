@@ -8,6 +8,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -46,12 +47,44 @@ private val CardBg = Color(0xFFFFFFFF)
 private val TextDark = Color(0xFF2C1A36)
 private val TextMuted = Color(0xFF7B6287)
 
+data class AgentMetricsData(
+    val available: String = "0",
+    val reserved: String = "0",
+    val occupied: String = "0",
+    val maintenance: String = "0",
+    val notAvailable: String = "0"
+)
+
 @Composable
 fun AgentDashboardScreen(
     agentName: String = "Alex Reyes",
     @Suppress("UNUSED_PARAMETER") onNavigateToUnits: () -> Unit = {},
     onLogoutClick: () -> Unit = {}
 ) {
+    val context = LocalContext.current
+    val isPreview = LocalInspectionMode.current
+    val joinedPrefs = remember { context.getSharedPreferences("azure_calendar_joined_events", Context.MODE_PRIVATE) }
+    val deletedPrefs = remember { context.getSharedPreferences("azure_calendar_deleted_events", Context.MODE_PRIVATE) }
+
+    var cloudOwnerEvents by remember { mutableStateOf<List<OwnerEventItem>>(emptyList()) }
+
+    DisposableEffect(Unit) {
+        val registration = FirebaseCloudSyncManager.listenToOwnerEvents { updatedEvents ->
+            cloudOwnerEvents = updatedEvents
+        }
+        onDispose {
+            registration.remove()
+        }
+    }
+
+    val unreadEventCount = remember(cloudOwnerEvents, FirebaseCloudSyncManager.globalCloudSyncTrigger.intValue) {
+        if (isPreview) 1 else {
+            val joinedSet = joinedPrefs.getStringSet("joined_ids", emptySet()).orEmpty()
+            val deletedSet = deletedPrefs.getStringSet("deleted_ids", emptySet()).orEmpty()
+            cloudOwnerEvents.count { it.id !in joinedSet && it.id !in deletedSet && !it.isJoined }
+        }
+    }
+
     var selectedTab by rememberSaveable { mutableIntStateOf(0) } // 0: Home, 1: Calendar, 2: Units, 3: Event, 4: Profile
     var showFullScheduleViewAll by remember { mutableStateOf(false) }
 
@@ -64,6 +97,7 @@ fun AgentDashboardScreen(
             bottomBar = {
                 AgentBottomNavigationBar(
                     selectedTab = selectedTab,
+                    unreadEventCount = unreadEventCount,
                     onTabSelected = { selectedTab = it }
                 )
             },
@@ -83,7 +117,12 @@ fun AgentDashboardScreen(
                     1 -> CalendarTabContent(agentName = agentName, onNavigateToUnits = { selectedTab = 2 })
                     2 -> UnitsTabContent(agentName = agentName, onTabSelected = { selectedTab = it })
                     3 -> NotificationsCenterScreen(isOwnerMode = false, agentName = agentName)
-                    4 -> ProfileTabContent(agentName = agentName, isOwnerMode = false, onLogoutClick = onLogoutClick)
+                    4 -> ProfileTabContent(
+                        agentName = agentName,
+                        isOwnerMode = false,
+                        onLogoutClick = onLogoutClick,
+                        onNavigateToInvoices = { selectedTab = 2 }
+                    )
                     else -> HomeDashboardContent(agentName = agentName, onLogoutClick = onLogoutClick)
                 }
             }
@@ -278,9 +317,9 @@ private fun HomeDashboardContent(
         dbUnitsState.value = dbHelper.getAllUnits()
     }
 
-    val (availableCount, reservedCount, occupiedCount) = remember(dbEventsState.value, dbUnitsState.value, isPreview) {
+    val metrics = remember(dbEventsState.value, dbUnitsState.value, isPreview) {
         if (isPreview) {
-            Triple("12", "5", "3")
+            AgentMetricsData("12", "5", "3", "1", "1")
         } else {
             try {
                 val deletedPrefs = context.getSharedPreferences("azure_calendar_deleted_units", Context.MODE_PRIVATE)
@@ -300,6 +339,8 @@ private fun HomeDashboardContent(
 
                 var occCount = 0
                 var resCount = 0
+                var maintCount = 0
+                var notAvailCount = 0
                 var availCount = 0
 
                 val realTimeToday = java.util.Calendar.getInstance()
@@ -331,15 +372,16 @@ private fun HomeDashboardContent(
 
                     when {
                         activeStatus.contains("check") || activeStatus.contains("heart") || activeStatus.contains("occup") || activeStatus.contains("rent") -> occCount++
-                        activeStatus.contains("not") || activeStatus.contains("star") || activeStatus.contains("maintenance") || activeStatus.contains("circle") -> occCount++
+                        activeStatus.contains("maintenance") || activeStatus.contains("circle") -> maintCount++
+                        activeStatus.contains("not") || activeStatus.contains("star") -> notAvailCount++
                         activeStatus.contains("reserve") || activeStatus.contains("diamond") -> resCount++
                         else -> availCount++
                     }
                 }
 
-                Triple(availCount.toString(), resCount.toString(), occCount.toString())
+                AgentMetricsData(availCount.toString(), resCount.toString(), occCount.toString(), maintCount.toString(), notAvailCount.toString())
             } catch (_: Exception) {
-                Triple("0", "0", "0")
+                AgentMetricsData("0", "0", "0", "0", "0")
             }
         }
     }
@@ -505,29 +547,53 @@ private fun HomeDashboardContent(
 
         Spacer(modifier = Modifier.height(20.dp))
 
+        // Row 1: Available, Reserved, Occupied
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             StatusSummaryCard(
                 title = "Available",
-                count = availableCount,
+                count = metrics.available,
                 bgColor = Color(0xFFE8F8F5),
                 textColor = Color(0xFF00A86B),
                 modifier = Modifier.weight(1f)
             )
             StatusSummaryCard(
                 title = "Reserved",
-                count = reservedCount,
+                count = metrics.reserved,
                 bgColor = Color(0xFFFFF8E7),
                 textColor = Color(0xFFF39C12),
                 modifier = Modifier.weight(1f)
             )
             StatusSummaryCard(
                 title = "Occupied",
-                count = occupiedCount,
+                count = metrics.occupied,
                 bgColor = Color(0xFFFFEAEA),
                 textColor = Color(0xFFE74C3C),
+                modifier = Modifier.weight(1f)
+            )
+        }
+
+        Spacer(modifier = Modifier.height(10.dp))
+
+        // Row 2: Under Maintenance, Not Available
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            StatusSummaryCard(
+                title = "Under Maintenance",
+                count = metrics.maintenance,
+                bgColor = Color(0xFFE3F2FD),
+                textColor = Color(0xFF1976D2),
+                modifier = Modifier.weight(1f)
+            )
+            StatusSummaryCard(
+                title = "Not Available",
+                count = metrics.notAvailable,
+                bgColor = Color(0xFFFFEBEE),
+                textColor = Color(0xFFC62828),
                 modifier = Modifier.weight(1f)
             )
         }
@@ -556,48 +622,71 @@ private fun HomeDashboardContent(
 
         Spacer(modifier = Modifier.height(12.dp))
 
-        val defaultUnits = listOf("Unit 12A", "Unit 15B", "Unit 08C", "Unit 06D")
-        val dbUnits = dbUnitsState.value.mapNotNull { it["unitNumber"]?.toString() }
-        val unitList = (dbUnits + defaultUnits).distinctBy { it.replace("Unit", "", ignoreCase = true).trim() }
-
         val realTimeTodayCal = java.util.Calendar.getInstance()
         val todayNum = realTimeTodayCal.get(java.util.Calendar.DAY_OF_MONTH)
+        val todayYear = realTimeTodayCal.get(java.util.Calendar.YEAR)
         val monthNamesListShort = listOf("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sept", "Oct", "Nov", "Dec")
+        val monthNamesListFull = listOf("January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December")
         val todayShortMonth = monthNamesListShort.getOrElse(realTimeTodayCal.get(java.util.Calendar.MONTH)) { "Oct" }
+        val todayFullMonth = monthNamesListFull.getOrElse(realTimeTodayCal.get(java.util.Calendar.MONTH)) { "October" }
 
-        unitList.take(4).forEachIndexed { idx, uName ->
-            val cleanU = uName.replace("Unit", "", ignoreCase = true).trim()
-            val matchingEvent = dbEventsState.value.find { evt ->
-                val evtDate = evt["date"] ?: ""
-                val evtUnit = evt["unit"] ?: ""
-                isSameUnit(evtUnit, cleanU) && isDateCoveredByEvent(evtDate, todayNum, todayShortMonth)
+        // Filter active bookings specifically created or active for Today's date
+        val todayActiveBookings = dbEventsState.value.filter { evt ->
+            val evtDate = evt["date"] ?: ""
+            val evtTime = evt["time"] ?: "12:00 PM"
+            val shape = evt["shape"] ?: ""
+            val isAvailableShape = shape.isBlank() || (shape.contains("Available", ignoreCase = true) && !shape.contains("Not", ignoreCase = true)) || shape.contains("Four", ignoreCase = true)
+
+            val monthMatches = evtDate.contains(todayShortMonth, ignoreCase = true) || evtDate.contains(todayFullMonth, ignoreCase = true)
+            val yearMatches = evtDate.contains(todayYear.toString())
+            val isExpired = FirebaseCloudSyncManager.isEventDateExpired(evtDate, evtTime)
+
+            monthMatches && yearMatches && !isExpired && !isAvailableShape && isDateCoveredByEvent(evtDate, todayNum, todayShortMonth, todayYear)
+        }
+
+        if (todayActiveBookings.isEmpty()) {
+            Card(
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = CardBg),
+                elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(20.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "No scheduled bookings for today",
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = TextMuted
+                    )
+                }
             }
+        } else {
+            todayActiveBookings.forEach { evt ->
+                val uName = evt["unit"] ?: "Unit"
+                val activeStatus = evt["shape"] ?: "Booked"
+                val evtTime = evt["time"]?.ifBlank { "12:00 PM" } ?: "12:00 PM"
 
-            val rawStatus = matchingEvent?.get("shape")?.ifBlank { null } ?: "Available"
-            val activeStatus = rawStatus.ifBlank { "Available" }
+                val indColor = when {
+                    activeStatus.contains("Check", ignoreCase = true) || activeStatus.contains("Heart", ignoreCase = true) -> Color(0xFFE91E63)
+                    activeStatus.contains("Reserve", ignoreCase = true) || activeStatus.contains("Diamond", ignoreCase = true) -> Color(0xFFF39C12)
+                    activeStatus.contains("Maintenance", ignoreCase = true) || activeStatus.contains("Circle", ignoreCase = true) -> Color(0xFF2196F3)
+                    else -> Color(0xFFE53935)
+                }
 
-            val indColor = when {
-                activeStatus.contains("Available", ignoreCase = true) && !activeStatus.contains("Not", ignoreCase = true) -> Color(0xFF00A86B)
-                activeStatus.contains("Check", ignoreCase = true) || activeStatus.contains("Heart", ignoreCase = true) -> Color(0xFFE91E63)
-                activeStatus.contains("Reserve", ignoreCase = true) || activeStatus.contains("Diamond", ignoreCase = true) -> Color(0xFFF39C12)
-                activeStatus.contains("Maintenance", ignoreCase = true) || activeStatus.contains("Circle", ignoreCase = true) -> Color(0xFF2196F3)
-                else -> Color(0xFFE53935)
+                ScheduleItemCard(
+                    time = evtTime,
+                    unit = uName,
+                    type = activeStatus,
+                    indicatorColor = indColor,
+                    onClick = { onNavigateToCalendar() }
+                )
+                Spacer(modifier = Modifier.height(10.dp))
             }
-
-            val timeSlot = when (idx) {
-                0 -> "10:00 AM"
-                1 -> "2:00 PM"
-                2 -> "5:00 PM"
-                else -> "6:00 PM"
-            }
-
-            ScheduleItemCard(
-                time = timeSlot,
-                unit = uName,
-                type = activeStatus,
-                indicatorColor = indColor
-            )
-            Spacer(modifier = Modifier.height(10.dp))
         }
 
         Spacer(modifier = Modifier.height(20.dp))
@@ -743,39 +832,75 @@ private fun CalendarTabContent(
                 selectedDateText = defaultTargetDate,
                 initialUnitName = selectedUnitName,
                 onBackClick = { currentSubScreen = "units_view" },
-                onSaveClick = { shape, color, unitName, dateText ->
+                onSaveClick = { shape, color, unitName, dateText, checkInTimeText ->
                     val finalTargetDate = dateText.ifBlank { defaultTargetDate }
-                    val colorLong = color.value.toLong()
-                    dbHelper.deleteEventByDateAndUnit(finalTargetDate, unitName)
-                    FirebaseCloudSyncManager.deleteEventFromCloud(finalTargetDate, unitName)
+                    val finalCheckInTime = checkInTimeText.ifBlank { "2:00 PM" }
+                    if (FirebaseCloudSyncManager.isDateInPast(finalTargetDate)) {
+                        Toast.makeText(context, "Booking is disabled for past dates! Please select today's date or a future date.", Toast.LENGTH_LONG).show()
+                    } else {
+                        val colorLong = color.value.toLong()
+                        val isAvailableShape = shape.contains("Four", ignoreCase = true) || (shape.contains("Available", ignoreCase = true) && !shape.contains("Not", ignoreCase = true))
 
-                    val isAvailableShape = shape.contains("Four", ignoreCase = true) || (shape.contains("Available", ignoreCase = true) && !shape.contains("Not", ignoreCase = true))
-                    if (!isAvailableShape) {
-                        dbHelper.insertEvent(
-                            title = "Staycation - $shape",
-                            date = finalTargetDate,
-                            time = "2:00 PM",
-                            agent = agentName,
-                            unit = unitName,
-                            shape = shape,
-                            color = colorLong
-                        )
-                        val eventMap = mapOf(
-                            "id" to System.currentTimeMillis().toString(),
-                            "title" to "Staycation - $shape",
-                            "date" to finalTargetDate,
-                            "time" to "2:00 PM",
-                            "agent" to agentName,
-                            "unit" to unitName,
-                            "shape" to shape,
-                            "color" to colorLong.toString()
-                        )
-                        FirebaseCloudSyncManager.pushEventToCloud(eventMap)
+                        dbHelper.updateUnitStatus(unitName, shape)
+                        FirebaseCloudSyncManager.pushUnitStatusToCloud(unitName, shape)
+
+                        if (isAvailableShape) {
+                            dbHelper.deleteEventsForUnit(unitName, syncToCloud = true)
+                        } else {
+                            val existingEvents = dbHelper.getAllEvents().filter { isSameUnit(it["unit"] ?: "", unitName) }
+                            if (existingEvents.isNotEmpty()) {
+                                val firstEvt = existingEvents.first()
+                                val evtId = firstEvt["id"]?.toLongOrNull() ?: System.currentTimeMillis()
+                                dbHelper.updateEvent(
+                                    id = evtId,
+                                    title = "Staycation - $shape",
+                                    date = finalTargetDate,
+                                    time = finalCheckInTime,
+                                    agent = agentName,
+                                    unit = unitName,
+                                    shape = shape,
+                                    color = colorLong
+                                )
+                                val eventMap = mapOf(
+                                    "id" to evtId.toString(),
+                                    "title" to "Staycation - $shape",
+                                    "date" to finalTargetDate,
+                                    "time" to finalCheckInTime,
+                                    "agent" to agentName,
+                                    "unit" to unitName,
+                                    "shape" to shape,
+                                    "color" to colorLong.toString()
+                                )
+                                FirebaseCloudSyncManager.pushEventToCloud(eventMap)
+                            } else {
+                                val newEvtId = System.currentTimeMillis()
+                                dbHelper.insertEvent(
+                                    title = "Staycation - $shape",
+                                    date = finalTargetDate,
+                                    time = finalCheckInTime,
+                                    agent = agentName,
+                                    unit = unitName,
+                                    shape = shape,
+                                    color = colorLong
+                                )
+                                val eventMap = mapOf(
+                                    "id" to newEvtId.toString(),
+                                    "title" to "Staycation - $shape",
+                                    "date" to finalTargetDate,
+                                    "time" to finalCheckInTime,
+                                    "agent" to agentName,
+                                    "unit" to unitName,
+                                    "shape" to shape,
+                                    "color" to colorLong.toString()
+                                )
+                                FirebaseCloudSyncManager.pushEventToCloud(eventMap)
+                            }
+                        }
+
+                        refreshTrigger++
+                        currentSubScreen = "calendar"
+                        Toast.makeText(context, if (isAvailableShape) "Unit $unitName set to Available! Tags cleaned." else "Tag $shape applied to $unitName for $finalTargetDate!", Toast.LENGTH_SHORT).show()
                     }
-
-                    refreshTrigger++
-                    currentSubScreen = "calendar"
-                    Toast.makeText(context, if (isAvailableShape) "Unit $unitName set to Available! Tags cleaned." else "Tag $shape applied to $unitName for $finalTargetDate!", Toast.LENGTH_SHORT).show()
 
                     EmailTemplateHelper.sendBookingEmail(
                         context = context,
@@ -954,13 +1079,16 @@ private fun ScheduleItemCard(
     time: String,
     unit: String,
     type: String,
-    indicatorColor: Color
+    indicatorColor: Color,
+    onClick: () -> Unit = {}
 ) {
     Card(
         shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(containerColor = CardBg),
         elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
-        modifier = Modifier.fillMaxWidth()
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onClick() }
     ) {
         Row(
             modifier = Modifier
@@ -1005,6 +1133,7 @@ private fun ScheduleItemCard(
 @Composable
 private fun AgentBottomNavigationBar(
     selectedTab: Int,
+    unreadEventCount: Int = 0,
     onTabSelected: (Int) -> Unit
 ) {
     Surface(
@@ -1045,6 +1174,7 @@ private fun AgentBottomNavigationBar(
                 icon = Icons.Default.Event,
                 label = "Event",
                 isSelected = selectedTab == 3,
+                badgeCount = unreadEventCount,
                 onClick = { onTabSelected(3) },
                 modifier = Modifier.weight(1f)
             )
@@ -1059,11 +1189,13 @@ private fun AgentBottomNavigationBar(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun BottomNavItem(
     icon: ImageVector,
     label: String,
     isSelected: Boolean,
+    badgeCount: Int = 0,
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -1075,19 +1207,36 @@ private fun BottomNavItem(
             .clickable(onClick = onClick)
             .padding(vertical = 8.dp)
     ) {
-        Box(
-            contentAlignment = Alignment.Center,
-            modifier = Modifier
-                .size(36.dp)
-                .clip(CircleShape)
-                .background(if (isSelected) Color(0xFFF3EDFD) else Color.Transparent)
+        BadgedBox(
+            badge = {
+                if (badgeCount > 0) {
+                    Badge(
+                        containerColor = Color(0xFFE53935),
+                        contentColor = Color.White
+                    ) {
+                        Text(
+                            text = if (badgeCount > 99) "99+" else "$badgeCount",
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+            }
         ) {
-            Icon(
-                imageVector = icon,
-                contentDescription = label,
-                tint = if (isSelected) PurplePrimary else Color.Gray,
-                modifier = Modifier.size(22.dp)
-            )
+            Box(
+                contentAlignment = Alignment.Center,
+                modifier = Modifier
+                    .size(36.dp)
+                    .clip(CircleShape)
+                    .background(if (isSelected) Color(0xFFF3EDFD) else Color.Transparent)
+            ) {
+                Icon(
+                    imageVector = icon,
+                    contentDescription = label,
+                    tint = if (isSelected) PurplePrimary else Color.Gray,
+                    modifier = Modifier.size(22.dp)
+                )
+            }
         }
         Spacer(modifier = Modifier.height(2.dp))
         Text(
@@ -1141,7 +1290,12 @@ fun saveSampledProfilePhoto(context: Context, uri: Uri, fileName: String): Strin
 }
 
 @Composable
-fun ProfileTabContent(agentName: String, isOwnerMode: Boolean = false, onLogoutClick: () -> Unit) {
+fun ProfileTabContent(
+    agentName: String,
+    isOwnerMode: Boolean = false,
+    onLogoutClick: () -> Unit,
+    onNavigateToInvoices: () -> Unit = {}
+) {
     val context = LocalContext.current
     val isPreview = LocalInspectionMode.current
     val prefs = remember { context.getSharedPreferences("azure_calendar_profile_prefs", Context.MODE_PRIVATE) }
@@ -1399,6 +1553,11 @@ fun ProfileTabContent(agentName: String, isOwnerMode: Boolean = false, onLogoutC
                         icon = Icons.Default.Email,
                         title = "Email Settings",
                         onClick = { showEmailSettingsDialog = true }
+                    )
+                    ProfileMenuItem(
+                        icon = Icons.Default.ReceiptLong,
+                        title = "Invoices & Billing Records",
+                        onClick = { onNavigateToInvoices() }
                     )
                     if (isOwnerMode) {
                         ProfileMenuItem(
@@ -2288,22 +2447,22 @@ private fun UnitsTabContent(
 ) {
     val context = LocalContext.current
     val dbHelper = remember { AzureDatabaseHelper(context) }
-    var currentSubScreen by remember { mutableStateOf("directory") }
-    var selectedUnitName by remember { mutableStateOf("Unit 12A") }
+    var currentSubScreen by rememberSaveable { mutableStateOf("directory") }
+    var selectedUnitName by rememberSaveable { mutableStateOf("Unit 12A") }
     val realTimeCal = remember { java.util.Calendar.getInstance() }
     val monthNamesList = listOf("January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December")
     val currentRealMonth = monthNamesList.getOrElse(realTimeCal.get(java.util.Calendar.MONTH)) { "October" }
     val currentRealYear = realTimeCal.get(java.util.Calendar.YEAR)
     val currentRealDay = realTimeCal.get(java.util.Calendar.DAY_OF_MONTH)
 
-    var selectedDayNum by remember { mutableIntStateOf(currentRealDay) }
-    var activeMonthName by remember { mutableStateOf(currentRealMonth) }
-    var activeYearNumber by remember { mutableIntStateOf(currentRealYear) }
+    var selectedDayNum by rememberSaveable { mutableIntStateOf(currentRealDay) }
+    var activeMonthName by rememberSaveable { mutableStateOf(currentRealMonth) }
+    var activeYearNumber by rememberSaveable { mutableIntStateOf(currentRealYear) }
     var refreshTrigger by remember { mutableIntStateOf(0) }
-    var selectedTowerName by remember { mutableStateOf("Azure Tower") }
-    var selectedBrType by remember { mutableStateOf("1 Bedroom") }
-    var selectedImageUri by remember { mutableStateOf("") }
-    var selectedStatus by remember { mutableStateOf("Available") }
+    var selectedTowerName by rememberSaveable { mutableStateOf("Azure Tower") }
+    var selectedBrType by rememberSaveable { mutableStateOf("1 Bedroom") }
+    var selectedImageUri by rememberSaveable { mutableStateOf("") }
+    var selectedStatus by rememberSaveable { mutableStateOf("Available") }
 
     var activeTagDateRange by remember { mutableStateOf("") }
 
@@ -2357,43 +2516,82 @@ private fun UnitsTabContent(
             },
             onTabSelected = onTabSelected
         )
+        "invoices" -> InvoiceBillingScreen(
+            onBackClick = { currentSubScreen = "directory" }
+        )
         "choose_category" -> ChooseCategoryScreen(
             selectedDateText = targetCategoryDateText,
             initialUnitName = selectedUnitName,
             onBackClick = { currentSubScreen = "details" },
-            onSaveClick = { shape, color, unitName, dateText ->
+            onSaveClick = { shape, color, unitName, dateText, checkInTimeText ->
                 val finalTargetDate = dateText.ifBlank { defaultRangeStr }
-                val colorLong = color.value.toLong()
-                dbHelper.deleteEventByDateAndUnit(finalTargetDate, unitName)
-                FirebaseCloudSyncManager.deleteEventFromCloud(finalTargetDate, unitName)
+                val finalCheckInTime = checkInTimeText.ifBlank { "2:00 PM" }
+                if (FirebaseCloudSyncManager.isDateInPast(finalTargetDate)) {
+                    Toast.makeText(context, "Booking is disabled for past dates! Please select today's date or a future date.", Toast.LENGTH_LONG).show()
+                } else {
+                    val colorLong = color.value.toLong()
+                    val isAvailableShape = shape.contains("Four", ignoreCase = true) || (shape.contains("Available", ignoreCase = true) && !shape.contains("Not", ignoreCase = true))
 
-                val isAvailableShape = shape.contains("Four", ignoreCase = true) || (shape.contains("Available", ignoreCase = true) && !shape.contains("Not", ignoreCase = true))
-                if (!isAvailableShape) {
-                    dbHelper.insertEvent(
-                        title = "Staycation - $shape",
-                        date = finalTargetDate,
-                        time = "2:00 PM",
-                        agent = agentName,
-                        unit = unitName,
-                        shape = shape,
-                        color = colorLong
-                    )
-                    val eventMap = mapOf(
-                        "id" to System.currentTimeMillis().toString(),
-                        "title" to "Staycation - $shape",
-                        "date" to finalTargetDate,
-                        "time" to "2:00 PM",
-                        "agent" to agentName,
-                        "unit" to unitName,
-                        "shape" to shape,
-                        "color" to colorLong.toString()
-                    )
-                    FirebaseCloudSyncManager.pushEventToCloud(eventMap)
+                    dbHelper.updateUnitStatus(unitName, shape)
+                    FirebaseCloudSyncManager.pushUnitStatusToCloud(unitName, shape)
+
+                    if (isAvailableShape) {
+                        dbHelper.deleteEventsForUnit(unitName, syncToCloud = true)
+                    } else {
+                        val existingEvents = dbHelper.getAllEvents().filter { isSameUnit(it["unit"] ?: "", unitName) }
+                        if (existingEvents.isNotEmpty()) {
+                            val firstEvt = existingEvents.first()
+                            val evtId = firstEvt["id"]?.toLongOrNull() ?: System.currentTimeMillis()
+                            dbHelper.updateEvent(
+                                id = evtId,
+                                title = "Staycation - $shape",
+                                date = finalTargetDate,
+                                time = finalCheckInTime,
+                                agent = agentName,
+                                unit = unitName,
+                                shape = shape,
+                                color = colorLong
+                            )
+                            val eventMap = mapOf(
+                                "id" to evtId.toString(),
+                                "title" to "Staycation - $shape",
+                                "date" to finalTargetDate,
+                                "time" to finalCheckInTime,
+                                "agent" to agentName,
+                                "unit" to unitName,
+                                "shape" to shape,
+                                "color" to colorLong.toString()
+                            )
+                            FirebaseCloudSyncManager.pushEventToCloud(eventMap)
+                        } else {
+                            val newEvtId = System.currentTimeMillis()
+                            dbHelper.insertEvent(
+                                title = "Staycation - $shape",
+                                date = finalTargetDate,
+                                time = finalCheckInTime,
+                                agent = agentName,
+                                unit = unitName,
+                                shape = shape,
+                                color = colorLong
+                            )
+                            val eventMap = mapOf(
+                                "id" to newEvtId.toString(),
+                                "title" to "Staycation - $shape",
+                                "date" to finalTargetDate,
+                                "time" to finalCheckInTime,
+                                "agent" to agentName,
+                                "unit" to unitName,
+                                "shape" to shape,
+                                "color" to colorLong.toString()
+                            )
+                            FirebaseCloudSyncManager.pushEventToCloud(eventMap)
+                        }
+                    }
+
+                    refreshTrigger++
+                    Toast.makeText(context, if (isAvailableShape) "Unit $unitName set to Available! Tags cleaned." else "Tag $shape applied to $unitName for $finalTargetDate!", Toast.LENGTH_SHORT).show()
+                    currentSubScreen = "directory"
                 }
-
-                refreshTrigger++
-                Toast.makeText(context, if (isAvailableShape) "Unit $unitName set to Available! Tags cleaned." else "Tag $shape applied to $unitName for $finalTargetDate!", Toast.LENGTH_SHORT).show()
-                currentSubScreen = "directory"
 
                 val (_, calculatedPriceStr) = EmailTemplateHelper.calculateBookingPrice(finalTargetDate, 2500.0)
                 EmailTemplateHelper.sendBookingEmail(

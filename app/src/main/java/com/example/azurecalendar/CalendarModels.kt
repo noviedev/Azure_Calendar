@@ -1057,7 +1057,7 @@ fun AzureCalendarViewPreview() {
             ChooseCategoryScreen(
                 selectedDateText = "Sept ${selectedDay?.dayNumber ?: 1}, 2026",
                 onBackClick = { showChooseCategory = false },
-                onSaveClick = { shape, color, unitName, dateText ->
+                onSaveClick = { shape, color, unitName, dateText, checkInTimeText ->
                     if (selectedDay != null) {
                         calendarDays = calendarDays.map { day ->
                             if (day.dayNumber == selectedDay!!.dayNumber) {

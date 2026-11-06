@@ -17,7 +17,7 @@ class AzureDatabaseHelper(context: Context) : SQLiteOpenHelper(context.applicati
 
     companion object {
         private const val DATABASE_NAME = "azure_calendar.db"
-        private const val DATABASE_VERSION = 6
+        private const val DATABASE_VERSION = 7
 
         // Events Table
         const val TABLE_EVENTS = "events"
@@ -47,6 +47,16 @@ class AzureDatabaseHelper(context: Context) : SQLiteOpenHelper(context.applicati
         const val COLUMN_AGENT_EMAIL = "email"
         const val COLUMN_AGENT_GENDER = "gender"
         const val COLUMN_AGENT_POSITION = "position"
+
+        // Chat Messages Table
+        const val TABLE_CHAT_MESSAGES = "chat_messages"
+        const val COLUMN_CHAT_ID = "msg_id"
+        const val COLUMN_CHAT_ROOM_ID = "room_id"
+        const val COLUMN_CHAT_SENDER_NAME = "sender_name"
+        const val COLUMN_CHAT_SENDER_ROLE = "sender_role"
+        const val COLUMN_CHAT_TEXT = "message_text"
+        const val COLUMN_CHAT_TIMESTAMP = "timestamp"
+        const val COLUMN_CHAT_CREATED_TIME = "created_time"
     }
 
     override fun onCreate(db: SQLiteDatabase) {
@@ -76,9 +86,19 @@ class AzureDatabaseHelper(context: Context) : SQLiteOpenHelper(context.applicati
                 "$COLUMN_AGENT_GENDER TEXT, " +
                 "$COLUMN_AGENT_POSITION TEXT)")
 
+        val createChatTable = ("CREATE TABLE IF NOT EXISTS $TABLE_CHAT_MESSAGES (" +
+                "$COLUMN_CHAT_ID TEXT PRIMARY KEY, " +
+                "$COLUMN_CHAT_ROOM_ID TEXT, " +
+                "$COLUMN_CHAT_SENDER_NAME TEXT, " +
+                "$COLUMN_CHAT_SENDER_ROLE TEXT, " +
+                "$COLUMN_CHAT_TEXT TEXT, " +
+                "$COLUMN_CHAT_TIMESTAMP TEXT, " +
+                "$COLUMN_CHAT_CREATED_TIME LONG)")
+
         db.execSQL(createEventsTable)
         db.execSQL(createUnitsTable)
         db.execSQL(createAgentsTable)
+        db.execSQL(createChatTable)
 
         seedDefaultUnits(db)
     }
@@ -391,6 +411,57 @@ class AzureDatabaseHelper(context: Context) : SQLiteOpenHelper(context.applicati
         return rows
     }
 
+    fun insertChatMessage(
+        msgId: String,
+        roomId: String,
+        senderName: String,
+        senderRole: String,
+        text: String,
+        timestamp: String,
+        createdTime: Long = System.currentTimeMillis()
+    ): Long {
+        val db = this.writableDatabase
+        val values = ContentValues().apply {
+            put(COLUMN_CHAT_ID, msgId)
+            put(COLUMN_CHAT_ROOM_ID, roomId)
+            put(COLUMN_CHAT_SENDER_NAME, senderName)
+            put(COLUMN_CHAT_SENDER_ROLE, senderRole)
+            put(COLUMN_CHAT_TEXT, text)
+            put(COLUMN_CHAT_TIMESTAMP, timestamp)
+            put(COLUMN_CHAT_CREATED_TIME, createdTime)
+        }
+        return db.insertWithOnConflict(TABLE_CHAT_MESSAGES, null, values, SQLiteDatabase.CONFLICT_REPLACE)
+    }
+
+    fun getChatMessagesForRoom(roomId: String): List<GroupChatMessage> {
+        val list = mutableListOf<GroupChatMessage>()
+        try {
+            val db = this.readableDatabase
+            val cursor = db.rawQuery("SELECT * FROM $TABLE_CHAT_MESSAGES WHERE $COLUMN_CHAT_ROOM_ID = ? ORDER BY $COLUMN_CHAT_CREATED_TIME ASC", arrayOf(roomId))
+            if (cursor.moveToFirst()) {
+                do {
+                    val id = cursor.getString(cursor.getColumnIndexOrThrow(COLUMN_CHAT_ID))
+                    val senderName = cursor.getString(cursor.getColumnIndexOrThrow(COLUMN_CHAT_SENDER_NAME))
+                    val senderRole = cursor.getString(cursor.getColumnIndexOrThrow(COLUMN_CHAT_SENDER_ROLE))
+                    val text = cursor.getString(cursor.getColumnIndexOrThrow(COLUMN_CHAT_TEXT))
+                    val timestamp = cursor.getString(cursor.getColumnIndexOrThrow(COLUMN_CHAT_TIMESTAMP))
+                    list.add(
+                        GroupChatMessage(
+                            id = id,
+                            senderName = senderName,
+                            senderRole = senderRole,
+                            messageText = text,
+                            timestamp = timestamp,
+                            isSelf = false
+                        )
+                    )
+                } while (cursor.moveToNext())
+            }
+            cursor.close()
+        } catch (_: Exception) {}
+        return list
+    }
+
     // --- Units CRUD ---
     fun insertUnit(
         unitNumber: String,
@@ -531,76 +602,6 @@ class AzureDatabaseHelper(context: Context) : SQLiteOpenHelper(context.applicati
     }
 
     fun autoReleaseExpiredUnits() {
-        try {
-            val db = this.writableDatabase
-            val cursor = db.rawQuery("SELECT $COLUMN_ID, $COLUMN_DATE, $COLUMN_TIME, $COLUMN_UNIT, $COLUMN_SHAPE FROM $TABLE_EVENTS", null)
-            val expiredEvents = mutableListOf<Map<String, String>>()
-
-            if (cursor.moveToFirst()) {
-                do {
-                    val id = cursor.getLong(cursor.getColumnIndexOrThrow(COLUMN_ID)).toString()
-                    val dateStr = cursor.getString(cursor.getColumnIndexOrThrow(COLUMN_DATE)) ?: ""
-                    val timeStr = cursor.getString(cursor.getColumnIndexOrThrow(COLUMN_TIME)) ?: "12:00 PM"
-                    val unitStr = cursor.getString(cursor.getColumnIndexOrThrow(COLUMN_UNIT)) ?: ""
-                    val shapeStr = cursor.getString(cursor.getColumnIndexOrThrow(COLUMN_SHAPE)) ?: ""
-
-                    if (unitStr.isNotBlank() && dateStr.isNotBlank()) {
-                        if (FirebaseCloudSyncManager.isEventDateExpired(dateStr, timeStr)) {
-                            expiredEvents.add(
-                                mapOf(
-                                    "id" to id,
-                                    "date" to dateStr,
-                                    "unit" to unitStr,
-                                    "shape" to shapeStr
-                                )
-                            )
-                        }
-                    }
-                } while (cursor.moveToNext())
-            }
-            cursor.close()
-
-            if (expiredEvents.isNotEmpty()) {
-                for (evt in expiredEvents) {
-                    val idVal = evt["id"]?.toLongOrNull()
-                    val unitName = evt["unit"] ?: ""
-                    val dateStr = evt["date"] ?: ""
-
-                    if (idVal != null) {
-                        db.delete(TABLE_EVENTS, "$COLUMN_ID = ?", arrayOf(idVal.toString()))
-                    }
-
-                    if (unitName.isNotBlank()) {
-                        val cleanNum = unitName.replace("Unit", "", ignoreCase = true).trim()
-                        val normalizedUnit = "Unit $cleanNum"
-
-                        val checkCursor = db.rawQuery("SELECT $COLUMN_DATE, $COLUMN_TIME FROM $TABLE_EVENTS WHERE $COLUMN_UNIT LIKE ? OR $COLUMN_UNIT = ?", arrayOf("%$cleanNum%", normalizedUnit))
-                        var hasRemainingActiveEvent = false
-                        if (checkCursor.moveToFirst()) {
-                            do {
-                                val remainingDate = checkCursor.getString(0) ?: ""
-                                val remainingTime = checkCursor.getString(1) ?: "12:00 PM"
-                                if (remainingDate.isNotBlank() && !FirebaseCloudSyncManager.isEventDateExpired(remainingDate, remainingTime)) {
-                                    hasRemainingActiveEvent = true
-                                    break
-                                }
-                            } while (checkCursor.moveToNext())
-                        }
-                        checkCursor.close()
-
-                        if (!hasRemainingActiveEvent) {
-                            updateUnitStatus(normalizedUnit, "Available", syncToCloud = false)
-                            updateUnitStatus(cleanNum, "Available", syncToCloud = false)
-                            FirebaseCloudSyncManager.pushUnitStatusToCloud(normalizedUnit, "Available")
-                        }
-
-                        FirebaseCloudSyncManager.deleteEventFromCloud(dateStr, normalizedUnit)
-                    }
-                }
-                FirebaseCloudSyncManager.notifyCloudUpdate()
-            }
-        } catch (e: Exception) {
-            android.util.Log.e("AzureDB", "Error in autoReleaseExpiredUnits: ${e.message}")
-        }
+        // Preserves all events and unit status history indefinitely across app runs
     }
 }

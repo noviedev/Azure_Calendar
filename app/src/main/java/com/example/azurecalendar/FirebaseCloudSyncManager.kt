@@ -30,6 +30,7 @@ object FirebaseCloudSyncManager {
     private var unitsCatalogListener: ListenerRegistration? = null
     private var agentsListener: ListenerRegistration? = null
     private var deletedUnitsListener: ListenerRegistration? = null
+    private var deletedEventsListener: ListenerRegistration? = null
     private var adminProfileListener: ListenerRegistration? = null
 
     private fun sanitizeDocId(rawId: String): String {
@@ -42,8 +43,14 @@ object FirebaseCloudSyncManager {
     }
 
     private fun isSameUnit(unitA: String, unitB: String): Boolean {
+        if (unitA.isBlank() || unitB.isBlank()) return false
+        val isGeneral1 = unitA.equals("Event", ignoreCase = true) || unitA.contains("Meeting", ignoreCase = true) || unitA.contains("Owner Event", ignoreCase = true)
+        val isGeneral2 = unitB.equals("Event", ignoreCase = true) || unitB.contains("Meeting", ignoreCase = true) || unitB.contains("Owner Event", ignoreCase = true)
+        if (isGeneral1 || isGeneral2) return false
+
         val cleanA = unitA.replace("Unit", "", ignoreCase = true).trim()
         val cleanB = unitB.replace("Unit", "", ignoreCase = true).trim()
+        if (cleanA.isBlank() || cleanB.isBlank()) return false
         return cleanA.equals(cleanB, ignoreCase = true)
     }
 
@@ -178,7 +185,10 @@ object FirebaseCloudSyncManager {
             }
 
             val isPM = timeStr.contains("PM", ignoreCase = true)
-            val rawHour = Regex("\\d+").find(timeStr)?.value?.toIntOrNull() ?: 12
+            val timeNumbers = Regex("\\d+").findAll(timeStr).mapNotNull { it.value.toIntOrNull() }.toList()
+            val rawHour = timeNumbers.getOrNull(0) ?: 12
+            val rawMinute = timeNumbers.getOrNull(1) ?: 0
+
             val checkOutHour24 = when {
                 isPM && rawHour < 12 -> rawHour + 12
                 !isPM && rawHour == 12 -> 0
@@ -191,10 +201,49 @@ object FirebaseCloudSyncManager {
                 set(java.util.Calendar.MONTH, monthFound - 1)
                 set(java.util.Calendar.DAY_OF_MONTH, checkOutDay)
                 set(java.util.Calendar.HOUR_OF_DAY, checkOutHour24)
-                set(java.util.Calendar.MINUTE, 0)
+                set(java.util.Calendar.MINUTE, rawMinute)
             }
 
-            return realTimeCal.after(checkOutCal)
+            return !realTimeCal.before(checkOutCal)
+        } catch (_: Exception) {
+            return false
+        }
+    }
+
+    fun isDateInPast(dateStr: String): Boolean {
+        try {
+            if (dateStr.isBlank()) return false
+            val monthMap = mapOf(
+                "jan" to 1, "feb" to 2, "mar" to 3, "apr" to 4, "may" to 5, "jun" to 6,
+                "jul" to 7, "aug" to 8, "sep" to 9, "sept" to 9, "oct" to 10, "nov" to 11, "dec" to 12,
+                "january" to 1, "february" to 2, "march" to 3, "april" to 4, "june" to 6,
+                "july" to 7, "august" to 8, "september" to 9, "october" to 10, "november" to 11, "december" to 12
+            )
+
+            val realTimeCal = java.util.Calendar.getInstance().apply {
+                set(java.util.Calendar.HOUR_OF_DAY, 0)
+                set(java.util.Calendar.MINUTE, 0)
+                set(java.util.Calendar.SECOND, 0)
+                set(java.util.Calendar.MILLISECOND, 0)
+            }
+
+            val yearFound = Regex("\\b20\\d{2}\\b").find(dateStr)?.value?.toIntOrNull()
+                ?: realTimeCal.get(java.util.Calendar.YEAR)
+
+            val monthFound = monthMap.entries.find { dateStr.contains(it.key, ignoreCase = true) }?.value
+                ?: (realTimeCal.get(java.util.Calendar.MONTH) + 1)
+
+            val dayFound = Regex("\\b([1-9]|[12][0-9]|3[01])\\b").find(dateStr)?.value?.toIntOrNull()
+                ?: realTimeCal.get(java.util.Calendar.DAY_OF_MONTH)
+
+            val checkCal = java.util.Calendar.getInstance().apply {
+                clear()
+                set(java.util.Calendar.YEAR, yearFound)
+                set(java.util.Calendar.MONTH, monthFound - 1)
+                set(java.util.Calendar.DAY_OF_MONTH, dayFound)
+            }
+
+            return checkCal.before(realTimeCal)
         } catch (_: Exception) {
             return false
         }
@@ -227,7 +276,8 @@ object FirebaseCloudSyncManager {
                 .addOnSuccessListener {
                     Log.d(TAG, "Event $docId synced to Cloud Firestore!")
                     val shape = eventData["shape"] ?: ""
-                    if (cleanUnit.isNotBlank() && shape.isNotBlank()) {
+                    val isGeneralEvent = cleanUnit.equals("Event", ignoreCase = true) || cleanUnit.contains("Meeting", ignoreCase = true) || shape.contains("Owner Event", ignoreCase = true)
+                    if (cleanUnit.isNotBlank() && shape.isNotBlank() && !isGeneralEvent) {
                         pushUnitStatusToCloud(normalizedUnit, shape)
                     }
                     notifyCloudUpdate()
@@ -248,7 +298,7 @@ object FirebaseCloudSyncManager {
                 val date = evt["date"]?.toString() ?: ""
                 val time = evt["time"]?.toString() ?: "2:00 PM"
                 val unit = evt["unit"]?.toString() ?: ""
-                if (unit.isNotBlank() && date.isNotBlank() && !isEventDateExpired(date, time)) {
+                if (unit.isNotBlank() && date.isNotBlank()) {
                     val eventMap = mapOf(
                         "title" to (evt["title"]?.toString() ?: "Booking"),
                         "date" to date,
@@ -289,8 +339,7 @@ object FirebaseCloudSyncManager {
         try {
             val db = FirebaseFirestore.getInstance()
             val cleanUnit = unitName.replace("Unit", "", ignoreCase = true).trim()
-            val directDocId = sanitizeDocId("${cleanUnit}_${dateText}")
-            db.collection("events").document(directDocId).delete()
+            if (cleanUnit.isBlank()) return
 
             db.collection("events")
                 .get()
@@ -299,17 +348,15 @@ object FirebaseCloudSyncManager {
                         val uText = doc.getString("unit") ?: ""
                         val cleanU = uText.replace("Unit", "", ignoreCase = true).trim()
                         val dText = doc.getString("date") ?: ""
-                        val matchesUnit = cleanU.equals(cleanUnit, ignoreCase = true) || uText.contains(cleanUnit, ignoreCase = true)
-                        val matchesDate = dText.equals(dateText, ignoreCase = true) ||
+                        val matchesUnit = cleanU.equals(cleanUnit, ignoreCase = true) || uText.contains(cleanUnit, ignoreCase = true) || doc.id.contains(cleanUnit, ignoreCase = true)
+                        val matchesDate = dateText.isBlank() || dText.equals(dateText, ignoreCase = true) ||
                                 dText.contains(dateText, ignoreCase = true) ||
-                                dateText.contains(dText, ignoreCase = true) ||
-                                dateText.isBlank()
+                                dateText.contains(dText, ignoreCase = true)
 
                         if (matchesUnit && matchesDate) {
                             doc.reference.delete()
                         }
                     }
-                    pushUnitStatusToCloud(unitName, "Available")
                     notifyCloudUpdate()
                 }
         } catch (e: Exception) {
@@ -321,7 +368,8 @@ object FirebaseCloudSyncManager {
         try {
             val db = FirebaseFirestore.getInstance()
             val cleanUnit = unitName.replace("Unit", "", ignoreCase = true).trim()
-            if (cleanUnit.isBlank()) return
+            val isGeneralEvent = cleanUnit.equals("Event", ignoreCase = true) || cleanUnit.contains("Meeting", ignoreCase = true) || status.contains("Owner Event", ignoreCase = true)
+            if (cleanUnit.isBlank() || isGeneralEvent) return
             val normalizedUnit = "Unit $cleanUnit"
 
             val unitData = mapOf(
@@ -447,7 +495,6 @@ object FirebaseCloudSyncManager {
                     deletedSet.none { isSameUnit(it, num) }
                 }
 
-            val activeEvents = dbHelper.getAllEvents()
             for (u in allUnits) {
                 val uNum = u["unitNumber"]?.toString() ?: continue
                 val uTow = u["tower"]?.toString() ?: "Azure Tower"
@@ -456,12 +503,7 @@ object FirebaseCloudSyncManager {
                 val uImg = u["image_uri"]?.toString() ?: ""
                 val uDesc = u["description"]?.toString() ?: "1 Bedroom"
 
-                val matchingEvent = activeEvents.find { evt ->
-                    val evtUnit = evt["unit"] ?: ""
-                    isSameUnit(evtUnit, uNum)
-                }
-                val activeStatus = matchingEvent?.get("shape")?.ifBlank { null }
-                val uStat = activeStatus ?: (u["status"]?.toString() ?: "Available")
+                val uStat = u["status"]?.toString()?.ifBlank { "Available" } ?: "Available"
 
                 pushFullUnitToCloud(
                     unitNumber = uNum,
@@ -612,18 +654,16 @@ object FirebaseCloudSyncManager {
                                 }
 
                                 if (cleanUnit.isNotBlank() && date.isNotBlank()) {
-                                    if (!isEventDateExpired(date, time)) {
-                                        dbHelper.insertEvent(
-                                            title = title,
-                                            date = date,
-                                            time = time,
-                                            agent = agent,
-                                            unit = normalizedUnit,
-                                            shape = shape,
-                                            color = colorLong,
-                                            syncToCloud = false
-                                        )
-                                    }
+                                    dbHelper.insertEvent(
+                                        title = title,
+                                        date = date,
+                                        time = time,
+                                        agent = agent,
+                                        unit = normalizedUnit,
+                                        shape = shape,
+                                        color = colorLong,
+                                        syncToCloud = false
+                                    )
                                 }
                             }
                         }
@@ -810,8 +850,167 @@ object FirebaseCloudSyncManager {
                         Log.e(TAG, "Error syncing admin profile: ${err.message}")
                     }
                 }
+
+            // 7. Deleted Owner Events Listener
+            deletedEventsListener?.remove()
+            deletedEventsListener = db.collection("deleted_events")
+                .addSnapshotListener { snapshots, e ->
+                    if (e != null || snapshots == null) return@addSnapshotListener
+                    try {
+                        val deletedPrefs = appContext.getSharedPreferences("azure_calendar_deleted_events", Context.MODE_PRIVATE)
+                        val currentSet = deletedPrefs.getStringSet("deleted_ids", emptySet()).orEmpty().toMutableSet()
+                        var changed = false
+
+                        for (doc in snapshots.documents) {
+                            val delId = doc.getString("eventId") ?: doc.id
+                            val delTitle = doc.getString("title") ?: ""
+                            if (delId.isNotBlank() && currentSet.add(delId)) changed = true
+                            if (delTitle.isNotBlank() && currentSet.add(delTitle)) changed = true
+
+                            dbHelper.deleteEventByIdOrTitle(delId)
+                            if (delTitle.isNotBlank()) dbHelper.deleteEventByIdOrTitle(delTitle)
+                        }
+
+                        if (changed) {
+                            deletedPrefs.edit().putStringSet("deleted_ids", currentSet).apply()
+                        }
+                        notifyCloudUpdate()
+                        onSyncTriggered()
+                    } catch (err: Exception) {
+                        Log.e(TAG, "Error syncing deleted events: ${err.message}")
+                    }
+                }
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start Firestore cloud listener: ${e.message}")
+        }
+    }
+
+    fun pushOwnerEventToCloud(
+        id: String,
+        title: String,
+        description: String,
+        date: String,
+        time: String,
+        createdBy: String = "Owner",
+        targetAgent: String = "All Agents",
+        eventLink: String = ""
+    ) {
+        try {
+            val db = FirebaseFirestore.getInstance()
+            val docId = id.ifBlank { "evt_${System.currentTimeMillis()}" }
+
+            val data = mapOf(
+                "id" to docId,
+                "title" to title,
+                "description" to description,
+                "date" to date,
+                "time" to time,
+                "createdBy" to createdBy,
+                "targetAgent" to targetAgent,
+                "eventLink" to eventLink.ifBlank { "https://azurecalendar.app/event/join?id=$docId" },
+                "updatedAt" to System.currentTimeMillis()
+            )
+
+            db.collection("owner_events").document(docId).set(data)
+                .addOnSuccessListener {
+                    Log.d(TAG, "Owner event $docId pushed to Cloud Firestore!")
+                    notifyCloudUpdate()
+                }
+        } catch (e: Exception) {
+            Log.e(TAG, "Push owner event error: ${e.message}")
+        }
+    }
+
+    fun listenToOwnerEvents(onEventsUpdated: (List<OwnerEventItem>) -> Unit): ListenerRegistration {
+        val db = FirebaseFirestore.getInstance()
+
+        return db.collection("owner_events")
+            .addSnapshotListener { snapshot, e ->
+                if (e != null || snapshot == null) return@addSnapshotListener
+
+                val resultList = mutableListOf<OwnerEventItem>()
+                for (doc in snapshot.documents) {
+                    val id = doc.getString("id") ?: doc.id
+                    val title = doc.getString("title") ?: "Owner Event"
+                    val description = doc.getString("description") ?: "Event created by Owner"
+                    val date = doc.getString("date") ?: "Nov 5, 2026"
+                    val time = doc.getString("time") ?: "2:00 PM"
+                    val createdBy = doc.getString("createdBy") ?: "Owner"
+                    val targetAgent = doc.getString("targetAgent") ?: "All Agents"
+                    val eventLink = doc.getString("eventLink") ?: "https://azurecalendar.app/event/join?id=$id"
+
+                    if (title.isNotBlank() && !title.startsWith("Staycation", ignoreCase = true)) {
+                        resultList.add(
+                            OwnerEventItem(
+                                id = id,
+                                title = title,
+                                description = description,
+                                date = date,
+                                time = time,
+                                createdBy = createdBy,
+                                targetAgent = targetAgent,
+                                eventLink = eventLink
+                            )
+                        )
+                    }
+                }
+                onEventsUpdated(resultList)
+            }
+    }
+
+    fun deleteOwnerEventFromCloud(eventId: String, title: String = "") {
+        try {
+            val db = FirebaseFirestore.getInstance()
+            val cleanTitle = title.lowercase().trim()
+
+            if (eventId.isNotBlank()) {
+                db.collection("owner_events").document(eventId).delete()
+            }
+
+            db.collection("owner_events")
+                .get()
+                .addOnSuccessListener { query ->
+                    for (doc in query.documents) {
+                        val docId = doc.id
+                        val docTitle = doc.getString("title")?.lowercase()?.trim() ?: ""
+                        if (docId.equals(eventId, ignoreCase = true) || (cleanTitle.isNotBlank() && docTitle.contains(cleanTitle))) {
+                            doc.reference.delete()
+                        }
+                    }
+                    notifyCloudUpdate()
+                }
+
+            db.collection("events")
+                .get()
+                .addOnSuccessListener { query ->
+                    for (doc in query.documents) {
+                        val docId = doc.id
+                        val docTitle = doc.getString("title")?.lowercase()?.trim() ?: ""
+
+                        val matchesId = docId.equals(eventId, ignoreCase = true) || docId.contains(eventId, ignoreCase = true)
+                        val matchesTitle = cleanTitle.isNotBlank() && docTitle.contains(cleanTitle, ignoreCase = true)
+
+                        if (matchesId || matchesTitle) {
+                            doc.reference.delete()
+                        }
+                    }
+                    notifyCloudUpdate()
+                }
+
+            val delData = mapOf(
+                "eventId" to eventId,
+                "title" to title,
+                "deletedAt" to System.currentTimeMillis()
+            )
+            val docName = if (eventId.isNotBlank()) eventId else "del_${System.currentTimeMillis()}"
+            db.collection("deleted_events")
+                .document(docName)
+                .set(delData)
+                .addOnSuccessListener {
+                    notifyCloudUpdate()
+                }
+        } catch (e: Exception) {
+            Log.e(TAG, "Cloud owner event delete error: ${e.message}")
         }
     }
 
@@ -838,18 +1037,118 @@ object FirebaseCloudSyncManager {
         }
     }
 
+    fun getNormalizedEventId(eventId: String, title: String = ""): String {
+        val cleanTitle = title.lowercase().trim().replace(Regex("[^a-z0-9]"), "_")
+        if (cleanTitle.isNotBlank()) return "chat_$cleanTitle"
+        val cleanId = eventId.lowercase().trim().replace(Regex("[^a-z0-9]"), "_")
+        return if (cleanId.isNotBlank()) "chat_$cleanId" else "chat_general_event"
+    }
+
+    fun pushChatMessageToCloud(
+        eventId: String,
+        eventTitle: String = "",
+        senderName: String,
+        senderRole: String,
+        messageText: String,
+        timestamp: String
+    ) {
+        try {
+            val db = FirebaseFirestore.getInstance()
+            val cleanEventRoomId = getNormalizedEventId(eventId, eventTitle)
+            val msgId = "msg_${System.currentTimeMillis()}"
+
+            val msgData = mapOf(
+                "id" to msgId,
+                "senderName" to senderName,
+                "senderRole" to senderRole,
+                "messageText" to messageText,
+                "timestamp" to timestamp,
+                "createdTime" to System.currentTimeMillis()
+            )
+
+            db.collection("event_chats")
+                .document(cleanEventRoomId)
+                .collection("messages")
+                .document(msgId)
+                .set(msgData)
+                .addOnSuccessListener {
+                    Log.d(TAG, "Chat message pushed to Cloud Firestore for room $cleanEventRoomId")
+                    notifyCloudUpdate()
+                }
+                .addOnFailureListener { e ->
+                    Log.e(TAG, "Failed to push chat message: ${e.message}")
+                }
+        } catch (e: Exception) {
+            Log.e(TAG, "Chat cloud push error: ${e.message}")
+        }
+    }
+
+    fun listenToEventChatMessages(
+        context: Context,
+        eventId: String,
+        eventTitle: String = "",
+        onMessagesUpdated: (List<GroupChatMessage>) -> Unit
+    ): ListenerRegistration {
+        val cleanEventRoomId = getNormalizedEventId(eventId, eventTitle)
+        val db = FirebaseFirestore.getInstance()
+        val dbHelper = AzureDatabaseHelper(context.applicationContext)
+
+        return db.collection("event_chats")
+            .document(cleanEventRoomId)
+            .collection("messages")
+            .orderBy("createdTime", Query.Direction.ASCENDING)
+            .addSnapshotListener { snapshot, e ->
+                if (e != null || snapshot == null) return@addSnapshotListener
+
+                val resultList = mutableListOf<GroupChatMessage>()
+                for (doc in snapshot.documents) {
+                    val id = doc.getString("id") ?: doc.id
+                    val senderName = doc.getString("senderName") ?: "User"
+                    val senderRole = doc.getString("senderRole") ?: "Agent"
+                    val messageText = doc.getString("messageText") ?: ""
+                    val timestamp = doc.getString("timestamp") ?: "12:00 PM"
+                    val createdTime = doc.getLong("createdTime") ?: System.currentTimeMillis()
+
+                    if (messageText.isNotBlank()) {
+                        dbHelper.insertChatMessage(
+                            msgId = id,
+                            roomId = cleanEventRoomId,
+                            senderName = senderName,
+                            senderRole = senderRole,
+                            text = messageText,
+                            timestamp = timestamp,
+                            createdTime = createdTime
+                        )
+                        resultList.add(
+                            GroupChatMessage(
+                                id = id,
+                                senderName = senderName,
+                                senderRole = senderRole,
+                                messageText = messageText,
+                                timestamp = timestamp,
+                                isSelf = false
+                            )
+                        )
+                    }
+                }
+                onMessagesUpdated(resultList)
+            }
+    }
+
     fun stopCloudListener() {
         isListenerActive = false
         eventsListener?.remove()
         unitsListener?.remove()
         unitsCatalogListener?.remove()
         deletedUnitsListener?.remove()
+        deletedEventsListener?.remove()
         agentsListener?.remove()
         adminProfileListener?.remove()
         eventsListener = null
         unitsListener = null
         unitsCatalogListener = null
         deletedUnitsListener = null
+        deletedEventsListener = null
         agentsListener = null
         adminProfileListener = null
     }

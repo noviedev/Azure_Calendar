@@ -15,6 +15,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.Print
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -40,7 +41,10 @@ data class InvoiceItem(
     val unitAndType: String,
     val date: String,
     val amount: String,
-    val status: String // "Completed", "Pending", "Paid"
+    val status: String, // "Completed", "Pending", "Paid"
+    val agentName: String = "Admin Owner",
+    val guestName: String = "Guest",
+    val paymentMethod: String = "Bank Transfer"
 )
 
 @Composable
@@ -68,13 +72,77 @@ private fun InvoiceListScreen(
     onBackClick: () -> Unit = {},
     onViewInvoiceClick: (invoice: InvoiceItem) -> Unit = {}
 ) {
-    val invoices = remember {
-        listOf(
-            InvoiceItem("INV-00025", "Unit 12A · Staycation", "September 11, 2026", "₱2,500.00", "Completed"),
-            InvoiceItem("INV-00024", "Unit 15B · Rent", "September 5, 2026", "₱15,000.00", "Pending"),
-            InvoiceItem("INV-00023", "Unit 08C · Staycation", "August 30, 2026", "₱3,200.00", "Completed"),
-            InvoiceItem("INV-00022", "Unit 12A · Rent", "August 25, 2026", "₱15,000.00", "Paid")
-        )
+    val context = LocalContext.current
+    val dbHelper = remember { AzureDatabaseHelper(context) }
+    val syncTrigger = FirebaseCloudSyncManager.globalCloudSyncTrigger.intValue
+
+    var searchQuery by remember { mutableStateOf("") }
+
+    val realInvoices = remember(syncTrigger) {
+        val allEvents = dbHelper.getAllEvents()
+        val allUnits = dbHelper.getAllUnits()
+
+        // Invoices are generated for Check-ins ("Paid") and Reservations ("Pending")
+        val financialEvents = allEvents.filter { evt ->
+            val shape = evt["shape"] ?: ""
+            val title = evt["title"] ?: ""
+            val combined = "$shape $title"
+            combined.contains("Check", ignoreCase = true) || combined.contains("Heart", ignoreCase = true) ||
+            combined.contains("Reserve", ignoreCase = true) || combined.contains("Diamond", ignoreCase = true)
+        }
+
+        if (financialEvents.isEmpty()) {
+            listOf(
+                InvoiceItem("INV-10025", "Unit 12A · Check-in", "Nov 5 - Nov 7, 2026", "₱2,500.00", "Paid", "Admin Owner"),
+                InvoiceItem("INV-10024", "Unit 15B · Reserve", "Nov 10 - Nov 12, 2026", "₱5,000.00", "Pending", "Cris Nar"),
+                InvoiceItem("INV-10023", "Unit 08C · Check-in", "Nov 1 - Nov 3, 2026", "₱3,200.00", "Paid", "Alex")
+            )
+        } else {
+            financialEvents.mapIndexed { idx, evt ->
+                val rawId = evt["id"] ?: "${idx + 1001}"
+                val invId = if (rawId.startsWith("INV")) rawId else "INV-$rawId"
+                val uNum = evt["unit"] ?: "Unit 12A"
+                val shape = evt["shape"] ?: "Booking"
+                val dateStr = evt["date"] ?: "Nov 5, 2026"
+                val agent = evt["agent"] ?: "Admin Owner"
+
+                val matchedUnitMap = allUnits.find { (it["unitNumber"]?.toString() ?: "").contains(uNum, ignoreCase = true) }
+                val rate = (matchedUnitMap?.get("rate") as? Double) ?: 2500.0
+                val (calcAmount, _) = EmailTemplateHelper.calculateBookingPrice(dateStr, rate)
+                val formattedAmount = "₱" + String.format("%,.2f", calcAmount)
+
+                val invStatus = if (shape.contains("Reserve", ignoreCase = true) || shape.contains("Diamond", ignoreCase = true)) {
+                    "Pending"
+                } else {
+                    "Paid"
+                }
+
+                InvoiceItem(
+                    id = invId,
+                    unitAndType = "$uNum · $shape",
+                    date = dateStr,
+                    amount = formattedAmount,
+                    status = invStatus,
+                    agentName = agent,
+                    guestName = evt["guest"] ?: "Guest User",
+                    paymentMethod = if (invStatus == "Pending") "Pending / Pay on Arrival" else "GCash / Bank Transfer"
+                )
+            }
+        }
+    }
+
+    val filteredInvoices = remember(searchQuery, realInvoices) {
+        if (searchQuery.isBlank()) {
+            realInvoices
+        } else {
+            realInvoices.filter {
+                it.id.contains(searchQuery, ignoreCase = true) ||
+                it.unitAndType.contains(searchQuery, ignoreCase = true) ||
+                it.date.contains(searchQuery, ignoreCase = true) ||
+                it.agentName.contains(searchQuery, ignoreCase = true) ||
+                it.status.contains(searchQuery, ignoreCase = true)
+            }
+        }
     }
 
     Column(
@@ -121,15 +189,49 @@ private fun InvoiceListScreen(
             }
             Spacer(modifier = Modifier.width(10.dp))
             Text(
-                text = "Invoices",
-                fontSize = 22.sp,
+                text = "Invoices & Billing Records",
+                fontSize = 20.sp,
                 fontWeight = FontWeight.Bold,
                 color = TextDark
             )
         }
 
+        // Search Bar Field
+        OutlinedTextField(
+            value = searchQuery,
+            onValueChange = { searchQuery = it },
+            placeholder = { Text("Search invoice ID, unit, date, or agent...") },
+            leadingIcon = { Icon(Icons.Default.Search, contentDescription = "Search", tint = TextMuted) },
+            singleLine = true,
+            shape = RoundedCornerShape(14.dp),
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedBorderColor = PurplePrimary,
+                unfocusedBorderColor = Color(0xFFE0D0EC),
+                focusedContainerColor = CardBg,
+                unfocusedContainerColor = CardBg
+            ),
+            modifier = Modifier.fillMaxWidth()
+        )
+
         // Invoice Items List
-        invoices.forEach { item ->
+        if (filteredInvoices.isEmpty()) {
+            Card(
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = CardBg),
+                elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(24.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text("No matching invoices found", fontSize = 13.sp, color = TextMuted)
+                }
+            }
+        } else {
+            filteredInvoices.forEach { item ->
             Card(
                 shape = RoundedCornerShape(16.dp),
                 colors = CardDefaults.cardColors(containerColor = CardBg),
@@ -189,9 +291,16 @@ private fun InvoiceListScreen(
                             )
                             Spacer(modifier = Modifier.height(2.dp))
                             Text(
-                                text = item.date,
+                                text = "Date: ${item.date}",
                                 fontSize = 12.sp,
                                 color = TextMuted
+                            )
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Text(
+                                text = "Account: ${item.agentName}",
+                                fontSize = 12.sp,
+                                color = PurplePrimary,
+                                fontWeight = FontWeight.SemiBold
                             )
                             Spacer(modifier = Modifier.height(4.dp))
                             Text(
@@ -218,6 +327,7 @@ private fun InvoiceListScreen(
                     }
                 }
             }
+        }
         }
 
         Spacer(modifier = Modifier.height(20.dp))
@@ -412,7 +522,13 @@ fun InvoiceDetailsScreen(
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             Column {
-                Text(text = "Due Date", fontSize = 12.sp, color = TextMuted)
+                Text(text = "Managed By (User Account)", fontSize = 12.sp, color = TextMuted)
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(text = invoiceItem.agentName, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = TextDark)
+            }
+
+            Column {
+                Text(text = "Check-in / Stay Date", fontSize = 12.sp, color = TextMuted)
                 Spacer(modifier = Modifier.height(2.dp))
                 Text(text = invoiceItem.date, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = TextDark)
             }
@@ -420,7 +536,7 @@ fun InvoiceDetailsScreen(
             Column {
                 Text(text = "Payment Method", fontSize = 12.sp, color = TextMuted)
                 Spacer(modifier = Modifier.height(2.dp))
-                Text(text = "Bank Transfer", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = TextDark)
+                Text(text = invoiceItem.paymentMethod, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = TextDark)
             }
         }
 
