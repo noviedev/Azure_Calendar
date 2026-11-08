@@ -131,19 +131,57 @@ class AzureDatabaseHelper(context: Context) : SQLiteOpenHelper(context.applicati
         onCreate(db)
     }
 
-    /**
-     * Copies a temporary gallery content:// URI into permanent app storage on the Owner's phone
-     * so the photo never expires and can always be synced to the cloud.
-     */
     private fun persistLocalImageIfNeeded(cleanUnit: String, rawUri: String): String {
         if (rawUri.isBlank()) return ""
+        if (rawUri.startsWith("file://") || rawUri.startsWith("/data/")) return rawUri
+
+        if (rawUri.startsWith("data:image", ignoreCase = true)) {
+            return try {
+                val base64Part = rawUri.substringAfter("base64,", "")
+                if (base64Part.isBlank()) return ""
+                val bytes = android.util.Base64.decode(base64Part, android.util.Base64.DEFAULT)
+                val dir = File(appContext.filesDir, "synced_unit_images")
+                if (!dir.exists()) dir.mkdirs()
+
+                val safeUnit = cleanUnit.replace(Regex("[^a-zA-Z0-9_\\-.]"), "")
+                val outFile = File(dir, "unit_${safeUnit}_${base64Part.hashCode()}.jpg")
+                if (!outFile.exists()) {
+                    FileOutputStream(outFile).use { fos ->
+                        fos.write(bytes)
+                        fos.flush()
+                    }
+                }
+                Uri.fromFile(outFile).toString()
+            } catch (_: Exception) {
+                ""
+            }
+        }
+
         if (!rawUri.startsWith("content://", ignoreCase = true)) return rawUri
 
         return try {
-            val inputStream = appContext.contentResolver.openInputStream(Uri.parse(rawUri)) ?: return rawUri
-            val bitmap = BitmapFactory.decodeStream(inputStream)
-            inputStream.close()
-            if (bitmap == null) return rawUri
+            val uri = Uri.parse(rawUri)
+            val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            appContext.contentResolver.openInputStream(uri)?.use { stream ->
+                BitmapFactory.decodeStream(stream, null, options)
+            }
+
+            var inSampleSize = 1
+            val maxDim = 800
+            if (options.outWidth > maxDim || options.outHeight > maxDim) {
+                val halfWidth = options.outWidth / 2
+                val halfHeight = options.outHeight / 2
+                while (halfWidth / inSampleSize >= maxDim && halfHeight / inSampleSize >= maxDim) {
+                    inSampleSize *= 2
+                }
+            }
+
+            options.inSampleSize = inSampleSize
+            options.inJustDecodeBounds = false
+
+            val bitmap = appContext.contentResolver.openInputStream(uri)?.use { stream ->
+                BitmapFactory.decodeStream(stream, null, options)
+            } ?: return rawUri
 
             val dir = File(appContext.filesDir, "synced_unit_images")
             if (!dir.exists()) dir.mkdirs()
@@ -154,6 +192,7 @@ class AzureDatabaseHelper(context: Context) : SQLiteOpenHelper(context.applicati
                 bitmap.compress(Bitmap.CompressFormat.JPEG, 80, fos)
                 fos.flush()
             }
+            bitmap.recycle()
             Uri.fromFile(outFile).toString()
         } catch (_: Exception) {
             rawUri
@@ -250,6 +289,33 @@ class AzureDatabaseHelper(context: Context) : SQLiteOpenHelper(context.applicati
     }
 
     // --- Events CRUD ---
+    fun insertEventRaw(
+        docId: String,
+        title: String,
+        date: String,
+        time: String,
+        agent: String,
+        unit: String,
+        shape: String = "",
+        color: Long = 0L
+    ): Long {
+        val db = this.writableDatabase
+        val isGeneralEvent = unit.equals("Event", ignoreCase = true) || unit.contains("Meeting", ignoreCase = true) || shape.contains("Owner Event", ignoreCase = true)
+        val cleanUnit = unit.replace("Unit", "", ignoreCase = true).trim()
+        val normalizedUnit = if (isGeneralEvent) "Event" else "Unit $cleanUnit"
+
+        val values = ContentValues().apply {
+            put(COLUMN_TITLE, title)
+            put(COLUMN_DATE, date)
+            put(COLUMN_TIME, time)
+            put(COLUMN_AGENT, agent)
+            put(COLUMN_UNIT, normalizedUnit)
+            put(COLUMN_SHAPE, shape)
+            put(COLUMN_COLOR, color)
+        }
+        return db.insert(TABLE_EVENTS, null, values)
+    }
+
     fun insertEvent(
         title: String,
         date: String,
@@ -261,14 +327,17 @@ class AzureDatabaseHelper(context: Context) : SQLiteOpenHelper(context.applicati
         syncToCloud: Boolean = true
     ): Long {
         val db = this.writableDatabase
+        val isGeneralEvent = unit.equals("Event", ignoreCase = true) || unit.contains("Meeting", ignoreCase = true) || shape.contains("Owner Event", ignoreCase = true)
         val cleanUnit = unit.replace("Unit", "", ignoreCase = true).trim()
-        val normalizedUnit = "Unit $cleanUnit"
+        val normalizedUnit = if (isGeneralEvent) "Event" else "Unit $cleanUnit"
 
-        db.delete(
-            TABLE_EVENTS,
-            "$COLUMN_DATE = ? AND ($COLUMN_UNIT LIKE ? OR $COLUMN_UNIT LIKE ? OR $COLUMN_UNIT = ?)",
-            arrayOf(date, "%$cleanUnit%", "%$normalizedUnit%", unit)
-        )
+        if (!isGeneralEvent) {
+            db.delete(
+                TABLE_EVENTS,
+                "$COLUMN_DATE = ? AND ($COLUMN_UNIT LIKE ? OR $COLUMN_UNIT LIKE ? OR $COLUMN_UNIT = ?)",
+                arrayOf(date, "%$cleanUnit%", "%$normalizedUnit%", unit)
+            )
+        }
 
         val values = ContentValues().apply {
             put(COLUMN_TITLE, title)
@@ -281,20 +350,21 @@ class AzureDatabaseHelper(context: Context) : SQLiteOpenHelper(context.applicati
         }
         val rowId = db.insert(TABLE_EVENTS, null, values)
 
-        // Automatically push to Firebase Firestore whenever a user adds/updates an event!
-        if (syncToCloud && cleanUnit.isNotBlank() && date.isNotBlank() && title != "TEMP") {
+        if (syncToCloud && date.isNotBlank() && title != "TEMP") {
             FirebaseCloudSyncManager.pushEventToCloud(
                 mapOf<String, Any>(
+                    "id" to rowId.toString(),
                     "title" to title,
                     "date" to date,
                     "time" to time,
                     "agent" to agent,
                     "unit" to normalizedUnit,
-                    "shape" to shape.ifBlank { "Reserved" },
+                    "shape" to shape.ifBlank { if (isGeneralEvent) "Owner Event" else "Reserved" },
                     "color" to color
                 )
             )
         }
+        FirebaseCloudSyncManager.notifyCloudUpdate()
         return rowId
     }
 
@@ -411,6 +481,7 @@ class AzureDatabaseHelper(context: Context) : SQLiteOpenHelper(context.applicati
         if (cleanUnit.isNotBlank() && date.isNotBlank()) {
             FirebaseCloudSyncManager.pushEventToCloud(
                 mapOf<String, Any>(
+                    "id" to id.toString(),
                     "title" to title,
                     "date" to date,
                     "time" to time,
@@ -492,19 +563,30 @@ class AzureDatabaseHelper(context: Context) : SQLiteOpenHelper(context.applicati
         val cleanUnit = unitNumber.replace("Unit", "", ignoreCase = true).trim()
         val normalizedUnit = "Unit $cleanUnit"
 
-        // Preserve existing local image if incoming imageUri is empty
         var existingImageUri = ""
+        var existingStatus = ""
         val cursor = db.rawQuery(
-            "SELECT $COLUMN_IMAGE FROM $TABLE_UNITS WHERE $COLUMN_UNIT_NUMBER = ? OR $COLUMN_UNIT_NUMBER = ? OR $COLUMN_UNIT_NUMBER = ?",
+            "SELECT $COLUMN_IMAGE, $COLUMN_STATUS FROM $TABLE_UNITS WHERE $COLUMN_UNIT_NUMBER = ? OR $COLUMN_UNIT_NUMBER = ? OR $COLUMN_UNIT_NUMBER = ?",
             arrayOf(normalizedUnit, unitNumber, cleanUnit)
         )
         if (cursor.moveToFirst()) {
             existingImageUri = cursor.getString(0) ?: ""
+            existingStatus = cursor.getString(1) ?: ""
         }
         cursor.close()
 
         val rawFinalImage = imageUri.ifBlank { existingImageUri }
         val finalImageUri = persistLocalImageIfNeeded(cleanUnit, rawFinalImage)
+
+        val finalStatus = if (!syncToCloud && status == "Available" && existingStatus.isNotBlank() && existingStatus != "Available") {
+            existingStatus
+        } else if (status.isNotBlank()) {
+            status
+        } else if (existingStatus.isNotBlank()) {
+            existingStatus
+        } else {
+            "Available"
+        }
 
         db.delete(
             TABLE_UNITS,
@@ -515,7 +597,7 @@ class AzureDatabaseHelper(context: Context) : SQLiteOpenHelper(context.applicati
         val values = ContentValues().apply {
             put(COLUMN_UNIT_NUMBER, normalizedUnit)
             put(COLUMN_TOWER, tower)
-            put(COLUMN_STATUS, status)
+            put(COLUMN_STATUS, finalStatus)
             put(COLUMN_OWNER, owner)
             put(COLUMN_RATE, rate)
             put(COLUMN_IMAGE, finalImageUri)
@@ -523,19 +605,19 @@ class AzureDatabaseHelper(context: Context) : SQLiteOpenHelper(context.applicati
         }
         val rowId = db.insertWithOnConflict(TABLE_UNITS, null, values, SQLiteDatabase.CONFLICT_REPLACE)
 
-        // Pass appContext so FirebaseCloudSyncManager can convert the local photo to Base64 and push to Firestore!
         if (syncToCloud && cleanUnit.isNotBlank() && cleanUnit != "TEMP_UNIT") {
             FirebaseCloudSyncManager.pushFullUnitToCloud(
                 unitNumber = normalizedUnit,
                 tower = tower,
                 description = description,
-                status = status,
+                status = finalStatus,
                 owner = owner,
                 rate = rate,
                 imageUri = finalImageUri,
                 context = appContext
             )
         }
+        FirebaseCloudSyncManager.notifyCloudUpdate()
         return rowId
     }
 
@@ -568,6 +650,7 @@ class AzureDatabaseHelper(context: Context) : SQLiteOpenHelper(context.applicati
         } else if (syncToCloud && cleanUnit.isNotBlank() && cleanUnit != "TEMP_UNIT") {
             FirebaseCloudSyncManager.pushUnitStatusToCloud(normalizedUnit, status)
         }
+        FirebaseCloudSyncManager.notifyCloudUpdate()
         return rows
     }
 
@@ -593,13 +676,26 @@ class AzureDatabaseHelper(context: Context) : SQLiteOpenHelper(context.applicati
                 val imgIdx = cursor.getColumnIndex(COLUMN_IMAGE)
                 val descIdx = cursor.getColumnIndex(COLUMN_DESCRIPTION)
 
+                val uNum = if (numIdx != -1) cursor.getString(numIdx) ?: "" else ""
+                val rawImg = if (imgIdx != -1) cursor.getString(imgIdx) ?: "" else ""
+
+                val cleanImg = if (rawImg.startsWith("data:image", ignoreCase = true)) {
+                    val cleanNum = uNum.replace("Unit", "", ignoreCase = true).trim()
+                    val fixedUri = persistLocalImageIfNeeded(cleanNum, rawImg)
+                    val cv = ContentValues().apply { put(COLUMN_IMAGE, fixedUri) }
+                    db.update(TABLE_UNITS, cv, "$COLUMN_UNIT_NUMBER = ?", arrayOf(uNum))
+                    fixedUri
+                } else {
+                    rawImg
+                }
+
                 val unit = mapOf(
-                    "unitNumber" to if (numIdx != -1) cursor.getString(numIdx) ?: "" else "",
+                    "unitNumber" to uNum,
                     "tower" to if (towIdx != -1) cursor.getString(towIdx) ?: "" else "",
                     "status" to if (statIdx != -1) cursor.getString(statIdx) ?: "" else "",
                     "owner" to if (ownIdx != -1) cursor.getString(ownIdx) ?: "" else "",
-                    "rate" to if (rateIdx != -1) cursor.getDouble(rateIdx) else 0.0,
-                    "image_uri" to if (imgIdx != -1) cursor.getString(imgIdx) ?: "" else "",
+                    "rate" to if (rateIdx != -1) cursor.getDouble(rateIdx) ?: 0.0 else 0.0,
+                    "image_uri" to cleanImg,
                     "description" to if (descIdx != -1) cursor.getString(descIdx) ?: "1 Bedroom" else "1 Bedroom"
                 )
                 list.add(unit)
@@ -613,10 +709,10 @@ class AzureDatabaseHelper(context: Context) : SQLiteOpenHelper(context.applicati
         val db = this.writableDatabase
         val cleanUnit = unitNumber.replace("Unit", "", ignoreCase = true).trim()
         val normalizedUnit = "Unit $cleanUnit"
-        return db.delete(TABLE_UNITS, "$COLUMN_UNIT_NUMBER = ? OR $COLUMN_UNIT_NUMBER = ? OR $COLUMN_UNIT_NUMBER = ?", arrayOf(unitNumber, cleanUnit, normalizedUnit))
+        val count = db.delete(TABLE_UNITS, "$COLUMN_UNIT_NUMBER = ? OR $COLUMN_UNIT_NUMBER = ? OR $COLUMN_UNIT_NUMBER = ?", arrayOf(unitNumber, cleanUnit, normalizedUnit))
+        FirebaseCloudSyncManager.notifyCloudUpdate()
+        return count
     }
 
-    fun autoReleaseExpiredUnits() {
-        // Preserves all events and unit status history indefinitely across app runs
-    }
+    fun autoReleaseExpiredUnits() {}
 }

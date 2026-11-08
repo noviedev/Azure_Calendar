@@ -8,10 +8,10 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -19,6 +19,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.automirrored.filled.ExitToApp
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -52,29 +53,32 @@ data class AgentMetricsData(
     val reserved: String = "0",
     val occupied: String = "0",
     val maintenance: String = "0",
-    val notAvailable: String = "0"
+    val rented: String = "0"
 )
 
 @Composable
 fun AgentDashboardScreen(
     agentName: String = "Agent",
     @Suppress("UNUSED_PARAMETER") onNavigateToUnits: () -> Unit = {},
-    onLogoutClick: () -> Unit = {}
+    @Suppress("UNUSED_PARAMETER") onLogoutClick: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val isPreview = LocalInspectionMode.current
-    val joinedPrefs = remember { context.getSharedPreferences("azure_calendar_joined_events", Context.MODE_PRIVATE) }
     val deletedPrefs = remember { context.getSharedPreferences("azure_calendar_deleted_events", Context.MODE_PRIVATE) }
     val dbHelper = remember { AzureDatabaseHelper(context) }
 
     var cloudOwnerEvents by remember { mutableStateOf<List<OwnerEventItem>>(emptyList()) }
 
-    DisposableEffect(Unit) {
-        val registration = FirebaseCloudSyncManager.listenToOwnerEvents { updatedEvents ->
-            cloudOwnerEvents = updatedEvents
-        }
-        onDispose {
-            registration.remove()
+    DisposableEffect(isPreview) {
+        if (isPreview) {
+            onDispose { }
+        } else {
+            val registration = FirebaseCloudSyncManager.listenToOwnerEvents(context) { updatedEvents ->
+                cloudOwnerEvents = updatedEvents
+            }
+            onDispose {
+                registration.remove()
+            }
         }
     }
 
@@ -163,7 +167,7 @@ fun AgentDashboardScreen(
                 val lastReadCount = chatPrefs.getInt("read_count_${chatRoomId}_$agentName", 0)
                 val isChatRead = chatPrefs.getBoolean("read_all_${chatRoomId}_$agentName", false)
                 val isSeen = seenPrefs.getBoolean("seen_event_${event.id}_$agentName", false) ||
-                             seenPrefs.getBoolean("seen_event_${event.title}_$agentName", false)
+                        seenPrefs.getBoolean("seen_event_${event.title}_$agentName", false)
 
                 val unreadMsgs = if (isChatRead && totalRoomMsgs <= lastReadCount) 0 else (totalRoomMsgs - lastReadCount).coerceAtLeast(0)
                 val unreadEvt = if (!isSeen) 1 else 0
@@ -231,29 +235,178 @@ fun AgentDashboardScreen(
 fun FullScheduleViewAllScreen(
     onBackClick: () -> Unit = {}
 ) {
+    BookingListScreen(onBackClick = onBackClick, isOwnerMode = false)
+}
+
+data class BookingListItemData(
+    val unitName: String,
+    val title: String,
+    val date: String,
+    val time: String,
+    val agent: String,
+    val status: String,
+    val statusCategory: String,
+    val price: String
+)
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun BookingListScreen(
+    onBackClick: () -> Unit = {},
+    isOwnerMode: Boolean = false
+) {
     val context = LocalContext.current
     val isPreview = LocalInspectionMode.current
     val dbHelper = remember { AzureDatabaseHelper(context) }
     val syncTick = FirebaseCloudSyncManager.globalCloudSyncTrigger.intValue
 
-    val realTimeCal = remember { java.util.Calendar.getInstance() }
-    val monthNamesList = listOf("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sept", "Oct", "Nov", "Dec")
-    val currentShortM = monthNamesList.getOrElse(realTimeCal.get(java.util.Calendar.MONTH)) { "Oct" }
-    val currentDay = realTimeCal.get(java.util.Calendar.DAY_OF_MONTH)
-    val currentYear = realTimeCal.get(java.util.Calendar.YEAR)
-    val todayDateStr = "$currentShortM $currentDay, $currentYear"
+    var searchQuery by remember { mutableStateOf("") }
+    var selectedFilter by remember { mutableStateOf("All") }
 
-    val dbEvents = remember(isPreview, syncTick) {
-        if (isPreview) emptyList() else dbHelper.getAllEvents()
+    val filterOptions = listOf("All", "Check-in", "Reserved")
+
+    val dbEventsState = remember(syncTick) { mutableStateOf(if (isPreview) emptyList() else dbHelper.getAllEvents()) }
+    val dbUnitsState = remember(syncTick) { mutableStateOf(if (isPreview) emptyList() else dbHelper.getAllUnits()) }
+
+    LaunchedEffect(syncTick) {
+        if (!isPreview) {
+            dbEventsState.value = dbHelper.getAllEvents()
+            dbUnitsState.value = dbHelper.getAllUnits()
+        }
     }
-    val unitList = remember(isPreview, syncTick) {
+
+    LaunchedEffect(Unit) {
+        if (!isPreview) {
+            while (true) {
+                dbEventsState.value = dbHelper.getAllEvents()
+                dbUnitsState.value = dbHelper.getAllUnits()
+                kotlinx.coroutines.delay(1000)
+            }
+        }
+    }
+
+    val dbEvents = dbEventsState.value
+    val dbUnits = dbUnitsState.value
+
+    val unitList = remember(isPreview, syncTick, dbUnits) {
         if (isPreview) {
             listOf("Unit 12A", "Unit 15B", "Unit 08C", "Unit 06D")
         } else {
             val defaultUnits = listOf("Unit 12A", "Unit 15B", "Unit 08C", "Unit 06D")
-            val dbUnits = dbHelper.getAllUnits().mapNotNull { it["unitNumber"]?.toString() }
-            (dbUnits + defaultUnits)
+            val customUnits = dbUnits.mapNotNull { it["unitNumber"]?.toString() }
+            (customUnits + defaultUnits)
                 .distinctBy { it.replace("Unit", "", ignoreCase = true).trim() }
+        }
+    }
+
+    val allBookingItems = remember(dbEvents, dbUnits, unitList, syncTick) {
+        val realTimeToday = java.util.Calendar.getInstance()
+        val todayDayNum = realTimeToday.get(java.util.Calendar.DAY_OF_MONTH)
+        val todayYear = realTimeToday.get(java.util.Calendar.YEAR)
+        val monthNamesListShort = listOf("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sept", "Oct", "Nov", "Dec")
+        val monthNamesListFull = listOf("January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December")
+        val todayMonthShort = monthNamesListShort.getOrElse(realTimeToday.get(java.util.Calendar.MONTH)) { "Oct" }
+
+        val items = mutableListOf<BookingListItemData>()
+
+        // 1. Process all active booking events from database that are Reserved or Check-in
+        dbEvents.forEach { evt ->
+            val evtUnit = evt["unit"] ?: ""
+            val cleanU = evtUnit.replace("Unit", "", ignoreCase = true).trim()
+            val normalizedUnit = if (cleanU.isNotBlank()) "Unit $cleanU" else evtUnit
+            val rawStatus = evt["shape"]?.ifBlank { null } ?: evt["title"] ?: ""
+
+            val statusCategory = when {
+                rawStatus.contains("Check", ignoreCase = true) || rawStatus.contains("Heart", ignoreCase = true) -> "Check-in"
+                rawStatus.contains("Reserve", ignoreCase = true) || rawStatus.contains("Diamond", ignoreCase = true) -> "Reserved"
+                else -> ""
+            }
+
+            if (statusCategory.isNotBlank()) {
+                val matchedUnitRow = dbUnits.find { isSameUnit(it["unitNumber"]?.toString() ?: "", cleanU) }
+                val evtTitle = evt["title"]?.ifBlank { "Staycation Booking" } ?: "Staycation Booking"
+                val evtDate = evt["date"]?.ifBlank { "$todayMonthShort $todayDayNum, $todayYear" } ?: "$todayMonthShort $todayDayNum, $todayYear"
+                val evtTime = evt["time"]?.ifBlank { "2:00 PM" } ?: "2:00 PM"
+                val agent = evt["agent"]?.ifBlank { if (isOwnerMode) "Admin Owner" else "Agent" } ?: if (isOwnerMode) "Admin Owner" else "Agent"
+                val unitRate = (matchedUnitRow?.get("rate") as? Double) ?: 2500.0
+                val priceFormatted = "₱" + String.format("%,.0f", unitRate)
+
+                items.add(
+                    BookingListItemData(
+                        unitName = normalizedUnit,
+                        title = evtTitle,
+                        date = evtDate,
+                        time = evtTime,
+                        agent = agent,
+                        status = if (statusCategory == "Reserved") "Reserved Tag" else "Check-In Tag",
+                        statusCategory = statusCategory,
+                        price = priceFormatted
+                    )
+                )
+            }
+        }
+
+        // 2. Also check unit master statuses for any Reserved or Check-in units
+        unitList.forEach { unitName ->
+            val cleanU = unitName.replace("Unit", "", ignoreCase = true).trim()
+            val matchedUnitRow = dbUnits.find { isSameUnit(it["unitNumber"]?.toString() ?: "", cleanU) }
+            val masterStatus = matchedUnitRow?.get("status")?.toString()?.ifBlank { "" } ?: ""
+
+            val statusCategory = when {
+                masterStatus.contains("Check", ignoreCase = true) || masterStatus.contains("Heart", ignoreCase = true) -> "Check-in"
+                masterStatus.contains("Reserve", ignoreCase = true) || masterStatus.contains("Diamond", ignoreCase = true) -> "Reserved"
+                else -> ""
+            }
+
+            if (statusCategory.isNotBlank()) {
+                val alreadyAdded = items.any { isSameUnit(it.unitName, cleanU) && it.statusCategory == statusCategory }
+                if (!alreadyAdded) {
+                    val unitRate = (matchedUnitRow?.get("rate") as? Double) ?: 2500.0
+                    val priceFormatted = "₱" + String.format("%,.0f", unitRate)
+                    items.add(
+                        BookingListItemData(
+                            unitName = unitName,
+                            title = if (statusCategory == "Reserved") "Staycation Reservation" else "Staycation Check-in",
+                            date = "$todayMonthShort $todayDayNum, $todayYear",
+                            time = "2:00 PM",
+                            agent = if (isOwnerMode) "Admin Owner" else "Agent",
+                            status = if (statusCategory == "Reserved") "Reserved Tag" else "Check-In Tag",
+                            statusCategory = statusCategory,
+                            price = priceFormatted
+                        )
+                    )
+                }
+            }
+        }
+
+        if (isPreview && items.isEmpty()) {
+            listOf(
+                BookingListItemData("Unit 12A", "Staycation Check-in", "$todayMonthShort $todayDayNum, $todayYear", "2:00 PM", "Agent", "Check-In Tag", "Check-in", "₱2,500"),
+                BookingListItemData("Unit 15B", "Staycation Reservation", "$todayMonthShort $todayDayNum, $todayYear", "2:00 PM", "Agent", "Reserved Tag", "Reserved", "₱2,500")
+            )
+        } else {
+            items.distinctBy { "${it.unitName}_${it.date}_${it.statusCategory}" }
+        }
+    }
+
+    val filteredItems = remember(allBookingItems, searchQuery, selectedFilter) {
+        allBookingItems.filter { item ->
+            val matchesFilter = when (selectedFilter) {
+                "All" -> true
+                "Check-in", "Checked-In" -> item.statusCategory == "Check-in"
+                "Reserved" -> item.statusCategory == "Reserved"
+                else -> true
+            }
+
+            val query = searchQuery.trim().lowercase()
+            val matchesSearch = query.isBlank() ||
+                    item.unitName.lowercase().contains(query) ||
+                    item.title.lowercase().contains(query) ||
+                    item.agent.lowercase().contains(query) ||
+                    item.date.lowercase().contains(query) ||
+                    item.status.lowercase().contains(query)
+
+            matchesFilter && matchesSearch
         }
     }
 
@@ -276,117 +429,240 @@ fun FullScheduleViewAllScreen(
                 )
             }
             Spacer(modifier = Modifier.width(8.dp))
-            Column {
+            Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = "Today's Units Schedule",
+                    text = "Booking List",
                     fontSize = 20.sp,
                     fontWeight = FontWeight.Bold,
                     color = TextDark
                 )
                 Text(
-                    text = todayDateStr,
-                    fontSize = 13.sp,
+                    text = "${filteredItems.size} total staycation bookings",
+                    fontSize = 12.sp,
                     fontWeight = FontWeight.Medium,
                     color = PurplePrimary
                 )
             }
         }
 
-        Spacer(modifier = Modifier.height(16.dp))
+        Spacer(modifier = Modifier.height(14.dp))
 
-        LazyColumn(
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-            modifier = Modifier.fillMaxSize()
+        OutlinedTextField(
+            value = searchQuery,
+            onValueChange = { searchQuery = it },
+            placeholder = { Text("Search by unit, guest, agent, date...", fontSize = 13.sp, color = TextMuted) },
+            leadingIcon = {
+                Icon(
+                    imageVector = Icons.Default.Search,
+                    contentDescription = "Search",
+                    tint = PurplePrimary,
+                    modifier = Modifier.size(18.dp)
+                )
+            },
+            trailingIcon = {
+                if (searchQuery.isNotBlank()) {
+                    IconButton(onClick = { searchQuery = "" }) {
+                        Icon(
+                            imageVector = Icons.Default.Clear,
+                            contentDescription = "Clear",
+                            tint = TextMuted,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
+                }
+            },
+            singleLine = true,
+            shape = RoundedCornerShape(14.dp),
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedBorderColor = PurplePrimary,
+                unfocusedBorderColor = Color(0xFFE2D6F5),
+                focusedContainerColor = CardBg,
+                unfocusedContainerColor = CardBg
+            ),
+            modifier = Modifier.fillMaxWidth()
+        )
+
+        Spacer(modifier = Modifier.height(12.dp))
+
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            items(unitList) { unitName ->
-                val cleanU = unitName.replace("Unit", "", ignoreCase = true).trim()
-                val realTimeToday = java.util.Calendar.getInstance()
-                val todayDayNum = realTimeToday.get(java.util.Calendar.DAY_OF_MONTH)
-                val todayYear = realTimeToday.get(java.util.Calendar.YEAR)
-                val monthNamesListShort = listOf("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sept", "Oct", "Nov", "Dec")
-                val monthNamesListFull = listOf("January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December")
-                val todayMonthShort = monthNamesListShort.getOrElse(realTimeToday.get(java.util.Calendar.MONTH)) { "Oct" }
-                val todayMonthFull = monthNamesListFull.getOrElse(realTimeToday.get(java.util.Calendar.MONTH)) { "October" }
+            filterOptions.forEach { filter ->
+                val isSelected = selectedFilter == filter
+                FilterChip(
+                    selected = isSelected,
+                    onClick = { selectedFilter = filter },
+                    label = {
+                        Text(
+                            text = filter,
+                            fontSize = 12.sp,
+                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium
+                        )
+                    },
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = PurplePrimary,
+                        selectedLabelColor = Color.White,
+                        containerColor = CardBg,
+                        labelColor = TextDark
+                    ),
+                    border = FilterChipDefaults.filterChipBorder(
+                        enabled = true,
+                        selected = isSelected,
+                        borderColor = Color(0xFFE2D6F5),
+                        selectedBorderColor = PurplePrimary
+                    )
+                )
+            }
+        }
 
-                val matchingEvt = dbEvents.find { evt ->
-                    val evtDate = evt["date"] ?: ""
-                    val evtUnit = evt["unit"] ?: ""
-                    val monthMatches = evtDate.contains(todayMonthShort, ignoreCase = true) || evtDate.contains(todayMonthFull, ignoreCase = true)
-                    val yearMatches = evtDate.contains(todayYear.toString())
-                    isSameUnit(evtUnit, cleanU) && monthMatches && yearMatches && isDateCoveredByEvent(evtDate, todayDayNum, todayMonthShort, todayYear)
-                }
+        Spacer(modifier = Modifier.height(14.dp))
 
-                val matchedUnitRow = dbHelper.getAllUnits().find {
-                    (it["unitNumber"]?.toString() ?: "").replace("Unit", "", ignoreCase = true).trim().equals(cleanU, ignoreCase = true)
-                }
-
-                val masterStatus = matchedUnitRow?.get("status")?.toString()?.lowercase() ?: "available"
-                val status = when {
-                    matchingEvt != null -> matchingEvt["shape"] ?: "Available"
-                    masterStatus.contains("maintenance") || masterStatus.contains("rented (6+") || masterStatus.contains("not available") -> masterStatus
-                    else -> "Available"
-                }
-                val time = matchingEvt?.get("time") ?: "10:00 AM"
-                val agent = matchingEvt?.get("agent") ?: "Admin"
-
-                val (statusBg, statusTextCol, dotColor) = when {
-                    status.contains("Check", ignoreCase = true) || status.contains("Heart", ignoreCase = true) -> Triple(Color(0xFFFFEBEE), Color(0xFFC2185B), Color(0xFFE91E63))
-                    status.contains("Reserve", ignoreCase = true) || status.contains("Diamond", ignoreCase = true) -> Triple(Color(0xFFFFF3E0), Color(0xFFEF6C00), Color(0xFFF39C12))
-                    status.contains("Maintenance", ignoreCase = true) || status.contains("Circle", ignoreCase = true) -> Triple(Color(0xFFE3F2FD), Color(0xFF1976D2), Color(0xFF2196F3))
-                    status.contains("Not", ignoreCase = true) || status.contains("Star", ignoreCase = true) -> Triple(Color(0xFFFFEBEE), Color(0xFFC62828), Color(0xFFE53935))
-                    else -> Triple(Color(0xFFE8F5E9), Color(0xFF2E7D32), Color(0xFF00A86B))
-                }
-
-                Card(
-                    shape = RoundedCornerShape(16.dp),
-                    colors = CardDefaults.cardColors(containerColor = CardBg),
-                    elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
-                    modifier = Modifier.fillMaxWidth()
+        if (filteredItems.isEmpty()) {
+            Card(
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = CardBg),
+                elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 20.dp)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(24.dp),
+                    contentAlignment = Alignment.Center
                 ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(16.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column {
-                            Text(
-                                text = unitName,
-                                fontSize = 16.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = TextDark
-                            )
-                            Spacer(modifier = Modifier.height(2.dp))
-                            Text(
-                                text = "$time • Agent: $agent",
-                                fontSize = 12.sp,
-                                color = TextMuted
-                            )
-                        }
+                    Text(
+                        text = "No bookings found matching your search or filter.",
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = TextMuted
+                    )
+                }
+            }
+        } else {
+            LazyColumn(
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+                modifier = Modifier.fillMaxSize()
+            ) {
+                items(filteredItems) { item ->
+                    val (statusBg, statusTextCol, dotColor) = when (item.statusCategory) {
+                        "Checked-In" -> Triple(Color(0xFFFFEBEE), Color(0xFFC2185B), Color(0xFFE91E63))
+                        "Reserved" -> Triple(Color(0xFFFFF3E0), Color(0xFFEF6C00), Color(0xFFF39C12))
+                        "Maintenance" -> Triple(Color(0xFFE3F2FD), Color(0xFF1976D2), Color(0xFF2196F3))
+                        "Rented" -> Triple(Color(0xFFFFEBEE), Color(0xFFC62828), Color(0xFFE53935))
+                        else -> Triple(Color(0xFFE8F5E9), Color(0xFF2E7D32), Color(0xFF00A86B))
+                    }
 
-                        Surface(
-                            shape = RoundedCornerShape(20.dp),
-                            color = statusBg
+                    Card(
+                        shape = RoundedCornerShape(16.dp),
+                        colors = CardDefaults.cardColors(containerColor = CardBg),
+                        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(16.dp)
                         ) {
                             Row(
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(6.dp)
-                                        .clip(CircleShape)
-                                        .background(dotColor)
-                                )
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Surface(
+                                        shape = RoundedCornerShape(8.dp),
+                                        color = PurplePrimary.copy(alpha = 0.1f)
+                                    ) {
+                                        Text(
+                                            text = item.unitName,
+                                            fontSize = 14.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = PurplePrimary,
+                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                        )
+                                    }
+                                    Text(
+                                        text = item.title,
+                                        fontSize = 14.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = TextDark
+                                    )
+                                }
+
+                                Surface(
+                                    shape = RoundedCornerShape(20.dp),
+                                    color = statusBg
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                    ) {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(6.dp)
+                                                .clip(CircleShape)
+                                                .background(dotColor)
+                                        )
+                                        Text(
+                                            text = item.status,
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = statusTextCol
+                                        )
+                                    }
+                                }
+                            }
+
+                            Spacer(modifier = Modifier.height(10.dp))
+
+                            HorizontalDivider(color = Color(0xFFF3EDFD), thickness = 1.dp)
+
+                            Spacer(modifier = Modifier.height(10.dp))
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(16.dp)
+                                ) {
+                                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                        Icon(imageVector = Icons.Default.DateRange, contentDescription = null, tint = TextMuted, modifier = Modifier.size(13.dp))
+                                        Text(text = item.date, fontSize = 12.sp, color = TextMuted)
+                                    }
+                                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                        Icon(imageVector = Icons.Default.Schedule, contentDescription = null, tint = TextMuted, modifier = Modifier.size(13.dp))
+                                        Text(text = item.time, fontSize = 12.sp, color = TextMuted)
+                                    }
+                                }
+
                                 Text(
-                                    text = status,
-                                    fontSize = 12.sp,
+                                    text = item.price,
+                                    fontSize = 14.sp,
                                     fontWeight = FontWeight.Bold,
-                                    color = statusTextCol
+                                    color = Color(0xFF00A86B)
                                 )
                             }
+
+                            Spacer(modifier = Modifier.height(4.dp))
+
+                            Text(
+                                text = "Agent: ${item.agent}",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Medium,
+                                color = TextMuted
+                            )
                         }
                     }
                 }
@@ -404,39 +680,51 @@ private fun HomeDashboardContent(
     val context = LocalContext.current
     val isPreview = LocalInspectionMode.current
 
-    val dbEventsState = remember { mutableStateOf<List<Map<String, String>>>(emptyList()) }
-    val dbUnitsState = remember { mutableStateOf<List<Map<String, Any>>>(emptyList()) }
+    val syncVersion = FirebaseCloudSyncManager.globalCloudSyncTrigger.intValue
     val dbHelper = remember { AzureDatabaseHelper(context) }
+    val dbEventsState = remember(syncVersion) { mutableStateOf(if (isPreview) emptyList() else dbHelper.getAllEvents()) }
+    val dbUnitsState = remember(syncVersion) { mutableStateOf(if (isPreview) emptyList() else dbHelper.getAllUnits()) }
 
-    LaunchedEffect(Unit, FirebaseCloudSyncManager.globalCloudSyncTrigger.intValue) {
-        dbEventsState.value = dbHelper.getAllEvents()
-        dbUnitsState.value = dbHelper.getAllUnits()
+    LaunchedEffect(syncVersion) {
+        if (!isPreview) {
+            dbEventsState.value = dbHelper.getAllEvents()
+            dbUnitsState.value = dbHelper.getAllUnits()
+        }
     }
 
-    val metrics = remember(dbEventsState.value, dbUnitsState.value, isPreview) {
+    LaunchedEffect(Unit) {
+        if (!isPreview) {
+            while (true) {
+                dbEventsState.value = dbHelper.getAllEvents()
+                dbUnitsState.value = dbHelper.getAllUnits()
+                kotlinx.coroutines.delay(1000)
+            }
+        }
+    }
+
+    val metrics = remember(dbEventsState.value, dbUnitsState.value, syncVersion, isPreview) {
         if (isPreview) {
             AgentMetricsData("12", "5", "3", "1", "1")
         } else {
             try {
                 val deletedPrefs = context.getSharedPreferences("azure_calendar_deleted_units", Context.MODE_PRIVATE)
                 val deletedSet = deletedPrefs.getStringSet("deleted_unit_numbers", emptySet()).orEmpty()
-                val defaultUnitsMap = listOf(
-                    mapOf("unitNumber" to "Unit 12A", "status" to "Available"),
-                    mapOf("unitNumber" to "Unit 15B", "status" to "Available"),
-                    mapOf("unitNumber" to "Unit 08C", "status" to "Available"),
-                    mapOf("unitNumber" to "Unit 06D", "status" to "Available")
-                )
-                val dbUnits = (dbUnitsState.value + defaultUnitsMap).distinctBy {
-                    (it["unitNumber"]?.toString() ?: "").replace("Unit", "", ignoreCase = true).trim()
-                }.filter { unitMap ->
+                val dbUnits = dbUnitsState.value.filter { unitMap ->
                     val num = unitMap["unitNumber"]?.toString() ?: ""
                     deletedSet.none { isSameUnit(it, num) }
                 }
+                val dbEvents = dbEventsState.value
+
+                val defaultUnits = listOf("Unit 12A", "Unit 15B", "Unit 08C", "Unit 06D")
+                    .filter { defNum -> deletedSet.none { isSameUnit(it, defNum) } }
+
+                val customUnitNums = dbUnits.mapNotNull { it["unitNumber"]?.toString() }
+                val allUnitNums = (customUnitNums + defaultUnits).distinctBy { it.replace("Unit", "", ignoreCase = true).trim() }
 
                 var occCount = 0
                 var resCount = 0
                 var maintCount = 0
-                var notAvailCount = 0
+                var rentedCount = 0
                 var availCount = 0
 
                 val realTimeToday = java.util.Calendar.getInstance()
@@ -447,35 +735,41 @@ private fun HomeDashboardContent(
                 val todayMonthShort = monthNamesListShort.getOrElse(realTimeToday.get(java.util.Calendar.MONTH)) { "Oct" }
                 val todayMonthFull = monthNamesListFull.getOrElse(realTimeToday.get(java.util.Calendar.MONTH)) { "October" }
 
-                dbUnits.forEach { matchedUnitMap ->
-                    val uNum = matchedUnitMap["unitNumber"]?.toString() ?: ""
+                allUnitNums.forEach { uNum ->
                     val cleanU = uNum.replace("Unit", "", ignoreCase = true).trim()
 
-                    val matchingTodayEvt = dbEventsState.value.find { evt ->
+                    val matchingTodayEvt = dbEvents.filter { evt ->
                         val evtDate = evt["date"] ?: ""
                         val evtUnit = evt["unit"] ?: ""
-                        val monthMatches = evtDate.contains(todayMonthShort, ignoreCase = true) || evtDate.contains(todayMonthFull, ignoreCase = true)
-                        val yearMatches = evtDate.contains(todayYear.toString())
-                        isSameUnit(evtUnit, cleanU) && monthMatches && yearMatches && isDateCoveredByEvent(evtDate, todayDayNum, todayMonthShort, todayYear)
+                        val evtTime = evt["time"] ?: "12:00 PM"
+                        val isExpired = FirebaseCloudSyncManager.isEventDateExpired(evtDate, evtTime)
+                        isSameUnit(evtUnit, cleanU) && !isExpired && isDateCoveredByEvent(evtDate, todayDayNum, todayMonthShort, todayYear)
+                    }.firstOrNull { evt ->
+                        val shape = (evt["shape"] ?: "").lowercase()
+                        !shape.contains("available") || shape.contains("not")
+                    } ?: dbEvents.find { evt ->
+                        val evtDate = evt["date"] ?: ""
+                        val evtUnit = evt["unit"] ?: ""
+                        val evtTime = evt["time"] ?: "12:00 PM"
+                        val isExpired = FirebaseCloudSyncManager.isEventDateExpired(evtDate, evtTime)
+                        isSameUnit(evtUnit, cleanU) && !isExpired && isDateCoveredByEvent(evtDate, todayDayNum, todayMonthShort, todayYear)
                     }
 
-                    val masterStatus = dbUnitsState.value.find { isSameUnit(it["unitNumber"]?.toString() ?: "", cleanU) }?.get("status")?.toString()?.lowercase() ?: "available"
-                    val activeStatus = when {
-                        matchingTodayEvt != null -> matchingTodayEvt["shape"]?.lowercase() ?: "available"
-                        masterStatus.contains("maintenance") || masterStatus.contains("rented (6+") || masterStatus.contains("not available") -> masterStatus
-                        else -> "available"
-                    }
+                    val matchedUnitMap = dbUnits.find { isSameUnit(it["unitNumber"]?.toString() ?: "", cleanU) }
+                    val masterStatus = matchedUnitMap?.get("status")?.toString()?.ifBlank { "Available" } ?: "Available"
+                    val activeStatus = matchingTodayEvt?.get("shape")?.ifBlank { null } ?: masterStatus
+                    val s = activeStatus.lowercase().trim()
 
                     when {
-                        activeStatus.contains("check") || activeStatus.contains("heart") || activeStatus.contains("occup") || activeStatus.contains("rent") -> occCount++
-                        activeStatus.contains("maintenance") || activeStatus.contains("circle") -> maintCount++
-                        activeStatus.contains("not") || activeStatus.contains("star") -> notAvailCount++
-                        activeStatus.contains("reserve") || activeStatus.contains("diamond") -> resCount++
+                        s.contains("rent") -> rentedCount++
+                        s.contains("maint") || s.contains("circle") -> maintCount++
+                        s.contains("reserv") || s.contains("diamond") -> resCount++
+                        s.contains("check") || s.contains("heart") || s.contains("occup") || s.contains("book") || s.contains("not") || s.contains("star") || s.contains("unavail") || s.contains("disable") -> occCount++
                         else -> availCount++
                     }
                 }
 
-                AgentMetricsData(availCount.toString(), resCount.toString(), occCount.toString(), maintCount.toString(), notAvailCount.toString())
+                AgentMetricsData(availCount.toString(), resCount.toString(), occCount.toString(), maintCount.toString(), rentedCount.toString())
             } catch (_: Exception) {
                 AgentMetricsData("0", "0", "0", "0", "0")
             }
@@ -673,7 +967,7 @@ private fun HomeDashboardContent(
 
         Spacer(modifier = Modifier.height(10.dp))
 
-        // Row 2: Under Maintenance, Not Available
+        // Row 2: Under Maintenance, Rented
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(10.dp)
@@ -686,12 +980,79 @@ private fun HomeDashboardContent(
                 modifier = Modifier.weight(1f)
             )
             StatusSummaryCard(
-                title = "Not Available",
-                count = metrics.notAvailable,
+                title = "Rented",
+                count = metrics.rented,
                 bgColor = Color(0xFFFFEBEE),
                 textColor = Color(0xFFC62828),
                 modifier = Modifier.weight(1f)
             )
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        // Booking List Action Card Button
+        Surface(
+            shape = RoundedCornerShape(16.dp),
+            color = PurplePrimary,
+            shadowElevation = 2.dp,
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { onNavigateToCalendar() }
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 18.dp, vertical = 14.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Surface(
+                        shape = CircleShape,
+                        color = Color.White.copy(alpha = 0.2f),
+                        modifier = Modifier.size(38.dp)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                imageVector = Icons.Default.FormatListBulleted,
+                                contentDescription = "Booking List",
+                                tint = Color.White,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                    }
+                    Column {
+                        Text(
+                            text = "Booking List",
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White
+                        )
+                        Text(
+                            text = "View all unit staycation bookings & directory",
+                            fontSize = 11.sp,
+                            color = Color.White.copy(alpha = 0.85f)
+                        )
+                    }
+                }
+                Surface(
+                    shape = CircleShape,
+                    color = Color.White.copy(alpha = 0.2f),
+                    modifier = Modifier.size(32.dp)
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.ArrowForward,
+                            contentDescription = "Open Booking List",
+                            tint = Color.White,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
+                }
+            }
         }
 
         Spacer(modifier = Modifier.height(24.dp))
@@ -707,13 +1068,36 @@ private fun HomeDashboardContent(
                 fontWeight = FontWeight.Bold,
                 color = TextDark
             )
-            Text(
-                text = "View All",
-                fontSize = 13.sp,
-                fontWeight = FontWeight.Bold,
-                color = PurplePrimary,
-                modifier = Modifier.clickable { onNavigateToCalendar() }
-            )
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = Color(0xFFF3EDFD),
+                    border = BorderStroke(1.dp, Color(0xFFE2D6F5)),
+                    modifier = Modifier.clickable { onNavigateToCalendar() }
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.FormatListBulleted,
+                            contentDescription = "Booking List",
+                            tint = PurplePrimary,
+                            modifier = Modifier.size(13.dp)
+                        )
+                        Text(
+                            text = "Booking List",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = PurplePrimary
+                        )
+                    }
+                }
+            }
         }
 
         Spacer(modifier = Modifier.height(12.dp))
@@ -726,7 +1110,6 @@ private fun HomeDashboardContent(
         val todayShortMonth = monthNamesListShort.getOrElse(realTimeTodayCal.get(java.util.Calendar.MONTH)) { "Oct" }
         val todayFullMonth = monthNamesListFull.getOrElse(realTimeTodayCal.get(java.util.Calendar.MONTH)) { "October" }
 
-        // Filter active bookings specifically created or active for Today's date
         val todayActiveBookings = dbEventsState.value.filter { evt ->
             val evtDate = evt["date"] ?: ""
             val evtTime = evt["time"] ?: "12:00 PM"
@@ -943,10 +1326,11 @@ private fun CalendarTabContent(
                         if (isAvailableShape) {
                             dbHelper.deleteEventsForUnit(unitName, syncToCloud = true)
                         } else {
-                            val existingEvents = dbHelper.getAllEvents().filter { isSameUnit(it["unit"] ?: "", unitName) }
-                            if (existingEvents.isNotEmpty()) {
-                                val firstEvt = existingEvents.first()
-                                val evtId = firstEvt["id"]?.toLongOrNull() ?: System.currentTimeMillis()
+                            val targetEvents = dbHelper.getAllEvents().filter {
+                                isSameUnit(it["unit"] ?: "", unitName) && (it["date"] == finalTargetDate || it["date"]?.contains(finalTargetDate) == true)
+                            }
+                            if (targetEvents.isNotEmpty()) {
+                                val evtId = targetEvents.first()["id"]?.toLongOrNull() ?: System.currentTimeMillis()
                                 dbHelper.updateEvent(
                                     id = evtId,
                                     title = "Staycation - $shape",
@@ -957,19 +1341,7 @@ private fun CalendarTabContent(
                                     shape = shape,
                                     color = colorLong
                                 )
-                                val eventMap = mapOf(
-                                    "id" to evtId.toString(),
-                                    "title" to "Staycation - $shape",
-                                    "date" to finalTargetDate,
-                                    "time" to finalCheckInTime,
-                                    "agent" to agentName,
-                                    "unit" to unitName,
-                                    "shape" to shape,
-                                    "color" to colorLong
-                                )
-                                FirebaseCloudSyncManager.pushEventToCloud(eventMap)
                             } else {
-                                val newEvtId = System.currentTimeMillis()
                                 dbHelper.insertEvent(
                                     title = "Staycation - $shape",
                                     date = finalTargetDate,
@@ -979,18 +1351,19 @@ private fun CalendarTabContent(
                                     shape = shape,
                                     color = colorLong
                                 )
-                                val eventMap = mapOf<String, Any>(
-                                    "id" to newEvtId.toString(),
-                                    "title" to "Staycation - $shape",
-                                    "date" to finalTargetDate,
-                                    "time" to finalCheckInTime,
-                                    "agent" to agentName,
-                                    "unit" to unitName,
-                                    "shape" to shape,
-                                    "color" to colorLong
-                                )
-                                FirebaseCloudSyncManager.pushEventToCloud(eventMap)
                             }
+
+                            val eventMap = mapOf<String, Any>(
+                                "title" to "Staycation - $shape",
+                                "date" to finalTargetDate,
+                                "time" to finalCheckInTime,
+                                "agent" to agentName,
+                                "unit" to unitName,
+                                "shape" to shape,
+                                "color" to colorLong,
+                                "updatedAt" to System.currentTimeMillis()
+                            )
+                            FirebaseCloudSyncManager.pushEventToCloud(eventMap)
                         }
 
                         refreshTrigger++
@@ -998,12 +1371,20 @@ private fun CalendarTabContent(
                         Toast.makeText(context, if (isAvailableShape) "Unit $unitName set to Available! Tags cleaned." else "Tag $shape applied to $unitName for $finalTargetDate!", Toast.LENGTH_SHORT).show()
                     }
 
+                    val isNoPriceTag = shape.contains("Reserve", ignoreCase = true) ||
+                            shape.contains("Diamond", ignoreCase = true) ||
+                            shape.contains("Maintenance", ignoreCase = true) ||
+                            shape.contains("Circle", ignoreCase = true)
+                    val (_, calculatedPriceStr) = EmailTemplateHelper.calculateBookingPrice(finalTargetDate, 2500.0)
                     EmailTemplateHelper.sendBookingEmail(
                         context = context,
                         ownerEmail = "owner.azure@gmail.com",
                         agentEmail = "${agentName.lowercase().replace(" ", ".")}@gmail.com",
                         agentName = agentName,
-                        unitName = unitName
+                        unitName = unitName,
+                        statusLabel = shape,
+                        dateText = finalTargetDate,
+                        amountText = if (isNoPriceTag) "" else calculatedPriceStr
                     )
                 }
             )
@@ -1358,12 +1739,28 @@ fun AgentDashboardScreenPreview() {
 
 fun saveSampledProfilePhoto(context: Context, uri: Uri, fileName: String): String? {
     return try {
-        val inputStream = context.contentResolver.openInputStream(uri) ?: return null
-        val originalBitmap = android.graphics.BitmapFactory.decodeStream(inputStream)
-        inputStream.close()
-        if (originalBitmap == null) return null
+        val options = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        context.contentResolver.openInputStream(uri)?.use { stream ->
+            android.graphics.BitmapFactory.decodeStream(stream, null, options)
+        }
 
         val maxDim = 512
+        var inSampleSize = 1
+        if (options.outWidth > maxDim || options.outHeight > maxDim) {
+            val halfWidth = options.outWidth / 2
+            val halfHeight = options.outHeight / 2
+            while (halfWidth / inSampleSize >= maxDim && halfHeight / inSampleSize >= maxDim) {
+                inSampleSize *= 2
+            }
+        }
+
+        options.inSampleSize = inSampleSize
+        options.inJustDecodeBounds = false
+
+        val originalBitmap = context.contentResolver.openInputStream(uri)?.use { stream ->
+            android.graphics.BitmapFactory.decodeStream(stream, null, options)
+        } ?: return null
+
         val width = originalBitmap.width
         val height = originalBitmap.height
         val scale = (maxDim.toFloat() / maxOf(width, height)).coerceAtMost(1.0f)
@@ -1371,16 +1768,19 @@ fun saveSampledProfilePhoto(context: Context, uri: Uri, fileName: String): Strin
         val scaledWidth = (width * scale).toInt().coerceAtLeast(1)
         val scaledHeight = (height * scale).toInt().coerceAtLeast(1)
 
-        val scaledBitmap = android.graphics.Bitmap.createScaledBitmap(originalBitmap, scaledWidth, scaledHeight, true)
-        if (scaledBitmap != originalBitmap) {
-            originalBitmap.recycle()
+        val scaledBitmap = if (scale < 1.0f) {
+            android.graphics.Bitmap.createScaledBitmap(originalBitmap, scaledWidth, scaledHeight, true).also {
+                if (it != originalBitmap) originalBitmap.recycle()
+            }
+        } else {
+            originalBitmap
         }
 
         val file = java.io.File(context.filesDir, fileName)
-        val outputStream = java.io.FileOutputStream(file)
-        scaledBitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 85, outputStream)
-        outputStream.flush()
-        outputStream.close()
+        java.io.FileOutputStream(file).use { outputStream ->
+            scaledBitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 85, outputStream)
+            outputStream.flush()
+        }
         scaledBitmap.recycle()
 
         file.absolutePath
@@ -2649,10 +3049,11 @@ private fun UnitsTabContent(
                     if (isAvailableShape) {
                         dbHelper.deleteEventsForUnit(unitName, syncToCloud = true)
                     } else {
-                        val existingEvents = dbHelper.getAllEvents().filter { isSameUnit(it["unit"] ?: "", unitName) }
-                        if (existingEvents.isNotEmpty()) {
-                            val firstEvt = existingEvents.first()
-                            val evtId = firstEvt["id"]?.toLongOrNull() ?: System.currentTimeMillis()
+                        val targetEvents = dbHelper.getAllEvents().filter {
+                            isSameUnit(it["unit"] ?: "", unitName) && (it["date"] == finalTargetDate || it["date"]?.contains(finalTargetDate) == true)
+                        }
+                        if (targetEvents.isNotEmpty()) {
+                            val evtId = targetEvents.first()["id"]?.toLongOrNull() ?: System.currentTimeMillis()
                             dbHelper.updateEvent(
                                 id = evtId,
                                 title = "Staycation - $shape",
@@ -2663,19 +3064,7 @@ private fun UnitsTabContent(
                                 shape = shape,
                                 color = colorLong
                             )
-                            val eventMap = mapOf<String, Any>(
-                                "id" to evtId.toString(),
-                                "title" to "Staycation - $shape",
-                                "date" to finalTargetDate,
-                                "time" to finalCheckInTime,
-                                "agent" to agentName,
-                                "unit" to unitName,
-                                "shape" to shape,
-                                "color" to colorLong
-                            )
-                            FirebaseCloudSyncManager.pushEventToCloud(eventMap)
                         } else {
-                            val newEvtId = System.currentTimeMillis()
                             dbHelper.insertEvent(
                                 title = "Staycation - $shape",
                                 date = finalTargetDate,
@@ -2685,18 +3074,19 @@ private fun UnitsTabContent(
                                 shape = shape,
                                 color = colorLong
                             )
-                            val eventMap = mapOf<String, Any>(
-                                "id" to newEvtId.toString(),
-                                "title" to "Staycation - $shape",
-                                "date" to finalTargetDate,
-                                "time" to finalCheckInTime,
-                                "agent" to agentName,
-                                "unit" to unitName,
-                                "shape" to shape,
-                                "color" to colorLong
-                            )
-                            FirebaseCloudSyncManager.pushEventToCloud(eventMap)
                         }
+
+                        val eventMap = mapOf<String, Any>(
+                            "title" to "Staycation - $shape",
+                            "date" to finalTargetDate,
+                            "time" to finalCheckInTime,
+                            "agent" to agentName,
+                            "unit" to unitName,
+                            "shape" to shape,
+                            "color" to colorLong,
+                            "updatedAt" to System.currentTimeMillis()
+                        )
+                        FirebaseCloudSyncManager.pushEventToCloud(eventMap)
                     }
 
                     refreshTrigger++
@@ -2704,6 +3094,10 @@ private fun UnitsTabContent(
                     currentSubScreen = "directory"
                 }
 
+                val isNoPriceTag = shape.contains("Reserve", ignoreCase = true) ||
+                        shape.contains("Diamond", ignoreCase = true) ||
+                        shape.contains("Maintenance", ignoreCase = true) ||
+                        shape.contains("Circle", ignoreCase = true)
                 val (_, calculatedPriceStr) = EmailTemplateHelper.calculateBookingPrice(finalTargetDate, 2500.0)
                 EmailTemplateHelper.sendBookingEmail(
                     context = context,
@@ -2713,7 +3107,7 @@ private fun UnitsTabContent(
                     unitName = unitName,
                     statusLabel = shape,
                     dateText = finalTargetDate,
-                    amountText = calculatedPriceStr
+                    amountText = if (isNoPriceTag) "" else calculatedPriceStr
                 )
             }
         )

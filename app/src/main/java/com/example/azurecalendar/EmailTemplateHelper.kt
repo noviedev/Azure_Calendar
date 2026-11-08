@@ -7,6 +7,62 @@ import android.widget.Toast
 
 object EmailTemplateHelper {
 
+    fun getAllRegisteredEmails(context: Context): List<String> {
+        val emails = mutableSetOf<String>()
+
+        // 1. Owner email from Personal Info prefs
+        try {
+            val infoPrefs = context.getSharedPreferences("azure_calendar_personal_info", Context.MODE_PRIVATE)
+            val adminEmail = infoPrefs.getString("email_Admin", "") ?: ""
+            if (adminEmail.isNotBlank()) emails.add(adminEmail.trim().lowercase())
+
+            val ownerEmail = infoPrefs.getString("email_Owner", "") ?: ""
+            if (ownerEmail.isNotBlank()) emails.add(ownerEmail.trim().lowercase())
+
+            infoPrefs.all.forEach { (key, value) ->
+                if (key.startsWith("email_") && value is String && value.contains("@")) {
+                    emails.add(value.trim().lowercase())
+                }
+            }
+        } catch (_: Exception) {}
+
+        // 2. Standard Owner emails
+        emails.add("novie1413@gmail.com")
+        emails.add("owner.azure@gmail.com")
+
+        // 3. Registered Agents' emails from SQLite Database
+        try {
+            val dbHelper = AzureDatabaseHelper(context.applicationContext)
+            val agents = dbHelper.getAllAgents()
+            for (agent in agents) {
+                val email = agent["email"] ?: ""
+                if (email.isNotBlank() && email.contains("@")) {
+                    emails.add(email.trim().lowercase())
+                }
+            }
+        } catch (_: Exception) {}
+
+        // 4. Firebase Auth Current User email
+        try {
+            val currentUserEmail = com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.email ?: ""
+            if (currentUserEmail.isNotBlank()) {
+                emails.add(currentUserEmail.trim().lowercase())
+            }
+        } catch (_: Exception) {}
+
+        // 5. Configured Sender emails from Email Settings
+        try {
+            val emailPrefs = context.getSharedPreferences("azure_calendar_email_prefs", Context.MODE_PRIVATE)
+            emailPrefs.all.forEach { (key, value) ->
+                if (key.startsWith("sender_email_") && value is String && value.contains("@")) {
+                    emails.add(value.trim().lowercase())
+                }
+            }
+        } catch (_: Exception) {}
+
+        return emails.filter { it.isNotBlank() && it.contains("@") }.distinct()
+    }
+
     fun calculateBookingPrice(
         dateText: String,
         weekdayRate: Double = 2500.0,
@@ -52,11 +108,28 @@ object EmailTemplateHelper {
         val breakdown = when {
             weekdayCount > 0 && weekendCount > 0 -> " ($weekdayCount Weekday${if (weekdayCount > 1) "s" else ""} @ ₱${String.format("%,.0f", weekdayRate)} + $weekendCount Weekend${if (weekendCount > 1) "s" else ""} @ ₱${String.format("%,.0f", weekendRate)})"
             weekendCount > 0 -> " ($weekendCount Weekend Night${if (weekendCount > 1) "s" else ""} @ ₱${String.format("%,.0f", weekendRate)}/night)"
-            else -> " ($weekdayCount Weekday Night${if (weekendCount > 1) "s" else ""} @ ₱${String.format("%,.0f", weekdayRate)}/night)"
+            else -> " ($weekdayCount Weekday Night${if (weekdayCount > 1) "s" else ""} @ ₱${String.format("%,.0f", weekdayRate)}/night)"
         }
 
         val formattedStr = "₱" + String.format("%,.0f", totalAmount) + breakdown
         return Pair(totalAmount, formattedStr)
+    }
+
+    fun getOwnerEmails(context: Context, fallbackOwner: String = "owner.azure@gmail.com"): List<String> {
+        val emails = mutableSetOf<String>()
+        try {
+            val infoPrefs = context.getSharedPreferences("azure_calendar_personal_info", Context.MODE_PRIVATE)
+            val adminEmail = infoPrefs.getString("email_Admin", "") ?: ""
+            if (adminEmail.isNotBlank()) emails.add(adminEmail.trim().lowercase())
+
+            val ownerPrefEmail = infoPrefs.getString("email_Owner", "") ?: ""
+            if (ownerPrefEmail.isNotBlank()) emails.add(ownerPrefEmail.trim().lowercase())
+        } catch (_: Exception) {}
+
+        if (fallbackOwner.isNotBlank()) emails.add(fallbackOwner.trim().lowercase())
+        emails.add("owner.azure@gmail.com")
+
+        return emails.filter { it.isNotBlank() && it.contains("@") }.distinct()
     }
 
     fun sendBookingEmail(
@@ -69,56 +142,80 @@ object EmailTemplateHelper {
         dateText: String = "Sept 11, 2026",
         amountText: String = "₱2,500.00"
     ) {
-        val isRevenueBooking = statusLabel.contains("Check", ignoreCase = true) ||
-                               statusLabel.contains("Heart", ignoreCase = true) ||
-                               statusLabel.contains("Reserve", ignoreCase = true) ||
-                               statusLabel.contains("Diamond", ignoreCase = true) ||
-                               statusLabel.contains("Extend", ignoreCase = true)
+        // Only the default owner email will be the recipient for tag status updates
+        val combinedRecipients = getOwnerEmails(context, ownerEmail).toTypedArray()
 
-        val priceSection = if (isRevenueBooking) "Total Rate / Price: $amountText\n" else ""
+        // Reserved and Under Maintenance tags DO NOT include price in email templates (for both Agents and Owners)!
+        val isNonPricedStatus = statusLabel.contains("Reserve", ignoreCase = true) ||
+                                statusLabel.contains("Diamond", ignoreCase = true) ||
+                                statusLabel.contains("Maintenance", ignoreCase = true) ||
+                                statusLabel.contains("Circle", ignoreCase = true)
 
-        val subject = "Azure Calendar Status Update - $unitName ($statusLabel)"
+        // ONLY Check-in and Rented status tags have price written in the email template!
+        val isRevenueBooking = !isNonPricedStatus && (
+                                statusLabel.contains("Check", ignoreCase = true) ||
+                                statusLabel.contains("Heart", ignoreCase = true) ||
+                                statusLabel.contains("Rent", ignoreCase = true) ||
+                                statusLabel.contains("Extend", ignoreCase = true)
+                               )
+
+        val formattedPrice = if (isNonPricedStatus) "" else if (amountText.isNotBlank()) amountText else {
+            try {
+                val dbHelper = AzureDatabaseHelper(context.applicationContext)
+                val matchedUnit = dbHelper.getAllUnits().find { (it["unitNumber"]?.toString() ?: "").contains(unitName.replace("Unit", "", ignoreCase = true).trim(), ignoreCase = true) }
+                val unitRate = (matchedUnit?.get("rate") as? Double) ?: 2500.0
+                if (statusLabel.contains("Rent", ignoreCase = true)) {
+                    val monthlyVal = if (unitRate >= 10000.0) unitRate else unitRate * 30.0
+                    "₱" + String.format("%,.0f", monthlyVal) + " / month"
+                } else {
+                    val (_, calcStr) = calculateBookingPrice(dateText, unitRate)
+                    calcStr
+                }
+            } catch (_: Exception) {
+                ""
+            }
+        }
+
+        val priceSection = if (isRevenueBooking && formattedPrice.isNotBlank()) "Total Rate / Price: $formattedPrice\n" else ""
+        val recipientsFormatted = combinedRecipients.joinToString("\n • ")
+
+        val subject = "Azure Calendar Realtime Unit Status Tag Update - $unitName ($statusLabel)"
         val bodyText = """
-Hello $agentName & Owner,
+Hello Owner,
 
-A unit status update has been successfully processed in the Azure Calendar system.
+A real-time unit status tag update has been successfully processed in the Azure Calendar system.
 
 --------------------------------------------------
-BOOKING & STATUS DETAILS
+REALTIME UNIT STATUS TAG DETAILS
 --------------------------------------------------
 Unit Number: $unitName
-Booking Category / Status: $statusLabel
-Booking Date: $dateText
-Assigned Agent: $agentName
-Agent Email: $agentEmail
-Owner Email: $ownerEmail
+Realtime Status Tag: $statusLabel
+Booking / Schedule Date: $dateText
+Updated By / Agent: $agentName
 ${priceSection}--------------------------------------------------
+RECIPIENT (OWNER)
+ • $recipientsFormatted
+--------------------------------------------------
 
-This notification is automatically routed to both the Owner and the booking Agent.
+This up-to-date status tag notification is automatically synchronized and routed in real time to the Owner.
 
 Best regards,
 Azure Calendar Management System
         """.trimIndent()
 
-        val recipientEmails = if (agentEmail.isNotBlank() && !agentEmail.equals(ownerEmail, ignoreCase = true)) {
-            arrayOf(ownerEmail, agentEmail)
-        } else {
-            arrayOf(ownerEmail)
-        }
-
         try {
             val intent = Intent(Intent.ACTION_SENDTO).apply {
                 data = Uri.parse("mailto:")
-                putExtra(Intent.EXTRA_EMAIL, recipientEmails)
+                putExtra(Intent.EXTRA_EMAIL, combinedRecipients)
                 putExtra(Intent.EXTRA_SUBJECT, subject)
                 putExtra(Intent.EXTRA_TEXT, bodyText)
             }
 
-            val chooserIntent = Intent.createChooser(intent, "Send Email via Gmail")
+            val chooserIntent = Intent.createChooser(intent, "Send Status Tag Update to All Registered Emails")
             chooserIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             context.startActivity(chooserIntent)
         } catch (e: Exception) {
-            Toast.makeText(context, "Gmail application not available", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, "Email client application not available", Toast.LENGTH_SHORT).show()
         }
     }
 }

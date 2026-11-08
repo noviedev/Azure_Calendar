@@ -125,12 +125,16 @@ fun NotificationsCenterScreen(
 
     var cloudOwnerEvents by remember { mutableStateOf<List<OwnerEventItem>>(emptyList()) }
 
-    DisposableEffect(Unit) {
-        val registration = FirebaseCloudSyncManager.listenToOwnerEvents { updatedEvents ->
-            cloudOwnerEvents = updatedEvents
-        }
-        onDispose {
-            registration.remove()
+    DisposableEffect(isPreview) {
+        if (isPreview) {
+            onDispose { }
+        } else {
+            val registration = FirebaseCloudSyncManager.listenToOwnerEvents(context) { updatedEvents ->
+                cloudOwnerEvents = updatedEvents
+            }
+            onDispose {
+                registration.remove()
+            }
         }
     }
 
@@ -142,18 +146,19 @@ fun NotificationsCenterScreen(
                 val unit = evt["unit"] ?: ""
                 val shape = evt["shape"] ?: ""
                 val isStaycation = title.startsWith("Staycation", ignoreCase = true) || shape.contains("Check", ignoreCase = true) || shape.contains("Reserve", ignoreCase = true)
-                !isStaycation && (unit.equals("Event", ignoreCase = true) || shape.contains("Owner Event", ignoreCase = true))
+                !isStaycation && (unit.contains("Event", ignoreCase = true) || shape.contains("Owner Event", ignoreCase = true))
             }.map { evt ->
                 val evtId = evt["id"] ?: "0"
                 val idNum = evtId.toLongOrNull() ?: 0L
+                val targetAg = evt["agent"]?.ifBlank { "All Agents" } ?: "All Agents"
                 OwnerEventItem(
                     id = evtId,
                     title = evt["title"] ?: "Owner Event",
-                    description = "Created by Owner/Admin for Agents",
+                    description = "Created by Owner/Admin for $targetAg",
                     date = evt["date"] ?: "Sept 15, 2026",
                     time = evt["time"] ?: "2:00 PM",
                     createdBy = "Owner",
-                    targetAgent = "All Agents",
+                    targetAgent = targetAg,
                     eventLink = "https://azurecalendar.app/event/join?id=$evtId",
                     createdAt = if (idNum > 1000000000L) idNum else System.currentTimeMillis()
                 )
@@ -196,17 +201,28 @@ fun NotificationsCenterScreen(
     }
 
     val visibleEvents = remember(combinedEvents, agentName, isOwnerMode, FirebaseCloudSyncManager.globalCloudSyncTrigger.intValue) {
+        val sessionManager = UserSessionManager(context)
+        val sessionName = sessionManager.getUsername().trim().lowercase()
+        val cleanParamName = agentName.trim().lowercase()
+
         val filtered = if (isOwnerMode) {
             combinedEvents
         } else {
             combinedEvents.filter { event ->
                 val target = event.targetAgent.trim()
-                if (target.isBlank() || target.equals("All Agents", ignoreCase = true) || target.contains("All", ignoreCase = true)) {
+                val targetClean = target.lowercase()
+                if (target.isBlank() || targetClean.contains("all")) {
                     true
                 } else {
-                    val agentClean = agentName.trim().lowercase()
-                    val targetClean = target.lowercase()
-                    targetClean.contains(agentClean) || agentClean.contains(targetClean) || UserSessionManager.isSameCreator(target, agentName)
+                    val paramFirstWord = cleanParamName.substringBefore(" ")
+                    val sessionFirstWord = sessionName.substringBefore(" ")
+
+                    targetClean.contains(cleanParamName) ||
+                    cleanParamName.contains(targetClean) ||
+                    (sessionName.isNotBlank() && (targetClean.contains(sessionName) || sessionName.contains(targetClean))) ||
+                    (paramFirstWord.length >= 3 && targetClean.contains(paramFirstWord)) ||
+                    (sessionFirstWord.length >= 3 && targetClean.contains(sessionFirstWord)) ||
+                    UserSessionManager.isSameCreator(target, agentName)
                 }
             }
         }

@@ -45,7 +45,7 @@ data class OwnerMetricsData(
     val reserved: String = "0",
     val occupied: String = "0",
     val maintenance: String = "0",
-    val notAvailable: String = "0",
+    val rented: String = "0",
     val income: String = "₱0"
 )
 
@@ -79,12 +79,16 @@ fun OwnerDashboardScreen(
     val deletedPrefs = remember { context.getSharedPreferences("azure_calendar_deleted_events", Context.MODE_PRIVATE) }
     var cloudOwnerEvents by remember { mutableStateOf<List<OwnerEventItem>>(emptyList()) }
 
-    DisposableEffect(Unit) {
-        val registration = FirebaseCloudSyncManager.listenToOwnerEvents { updatedEvents ->
-            cloudOwnerEvents = updatedEvents
-        }
-        onDispose {
-            registration.remove()
+    DisposableEffect(isPreview) {
+        if (isPreview) {
+            onDispose { }
+        } else {
+            val registration = FirebaseCloudSyncManager.listenToOwnerEvents(context) { updatedEvents ->
+                cloudOwnerEvents = updatedEvents
+            }
+            onDispose {
+                registration.remove()
+            }
         }
     }
 
@@ -174,7 +178,7 @@ fun OwnerDashboardScreen(
                 val lastReadCount = chatPrefs.getInt("read_count_${chatRoomId}_$userName", 0)
                 val isChatRead = chatPrefs.getBoolean("read_all_${chatRoomId}_$userName", false)
                 val isSeen = seenPrefs.getBoolean("seen_event_${event.id}_$userName", false) ||
-                             seenPrefs.getBoolean("seen_event_${event.title}_$userName", false)
+                        seenPrefs.getBoolean("seen_event_${event.title}_$userName", false)
 
                 val unreadMsgs = if (isChatRead && totalRoomMsgs <= lastReadCount) 0 else (totalRoomMsgs - lastReadCount).coerceAtLeast(0)
                 val unreadEvt = if (!isSeen) 1 else 0
@@ -209,7 +213,7 @@ fun OwnerDashboardScreen(
                 .fillMaxSize()
                 .padding(paddingValues)
         ) {
-            // Sub-screens (Add Unit / Invoices / Agents) are shown on top of whatever tab is active
+            // Sub-screens (Add Unit / Invoices / Agents / Booking List) are shown on top of whatever tab is active
             when (currentSubScreen) {
                 "add_unit" -> AddEditUnitScreen(
                     onBackClick = { currentSubScreen = "home" },
@@ -221,6 +225,10 @@ fun OwnerDashboardScreen(
                 "agents" -> AgentsListScreen(
                     onBackClick = { currentSubScreen = "home" }
                 )
+                "booking_list" -> BookingListScreen(
+                    onBackClick = { currentSubScreen = "home" },
+                    isOwnerMode = true
+                )
                 else -> when (selectedTab) {
                     1 -> OwnerCalendarTabContent(onNavigateToUnits = { selectedTab = 2 })
                     2 -> OwnerUnitsTabContent(onTabSelected = { selectedTab = it })
@@ -230,6 +238,7 @@ fun OwnerDashboardScreen(
                         onNavigateToaddUnit = { currentSubScreen = "add_unit" },
                         onNavigateToInvoices = { currentSubScreen = "invoices" },
                         onNavigateToAgents = { currentSubScreen = "agents" },
+                        onNavigateToBookingList = { currentSubScreen = "booking_list" },
                         onNavigateToUnits = { selectedTab = 2 },
                         onNavigateToNotifications = { selectedTab = 3 }
                     )
@@ -257,7 +266,7 @@ private fun OwnerCalendarTabContent(
     var selectedCheckInDay by remember { mutableIntStateOf(currentRealDay) }
     var selectedCheckOutDay by remember { mutableIntStateOf((currentRealDay + 2).coerceAtMost(30)) }
     var activeMonthName by remember { mutableStateOf(currentRealMonth) }
-    var activeYearNumber by remember { mutableIntStateOf(currentRealYear) }
+    var activeYearNumber by remember { mutableStateOf(currentRealYear) }
     var currentSubScreen by remember { mutableStateOf("calendar") } // "calendar", "units_view", "choose_category", "booking_details"
     var selectedUnitName by remember { mutableStateOf("Unit 12A") }
     var refreshTrigger by remember { mutableIntStateOf(0) }
@@ -366,10 +375,11 @@ private fun OwnerCalendarTabContent(
                         if (isAvailableShape) {
                             dbHelper.deleteEventsForUnit(unitName, syncToCloud = true)
                         } else {
-                            val existingEvents = dbHelper.getAllEvents().filter { isSameUnit(it["unit"] ?: "", unitName) }
-                            if (existingEvents.isNotEmpty()) {
-                                val firstEvt = existingEvents.first()
-                                val evtId = firstEvt["id"]?.toLongOrNull() ?: System.currentTimeMillis()
+                            val targetEvents = dbHelper.getAllEvents().filter {
+                                isSameUnit(it["unit"] ?: "", unitName) && (it["date"] == finalTargetDate || it["date"]?.contains(finalTargetDate) == true)
+                            }
+                            if (targetEvents.isNotEmpty()) {
+                                val evtId = targetEvents.first()["id"]?.toLongOrNull() ?: System.currentTimeMillis()
                                 dbHelper.updateEvent(
                                     id = evtId,
                                     title = "Staycation - $shape",
@@ -380,19 +390,7 @@ private fun OwnerCalendarTabContent(
                                     shape = shape,
                                     color = colorLong
                                 )
-                                val eventMap = mapOf<String, Any>(
-                                    "id" to evtId.toString(),
-                                    "title" to "Staycation - $shape",
-                                    "date" to finalTargetDate,
-                                    "time" to finalCheckInTime,
-                                    "agent" to "Admin Owner",
-                                    "unit" to unitName,
-                                    "shape" to shape,
-                                    "color" to colorLong
-                                )
-                                FirebaseCloudSyncManager.pushEventToCloud(eventMap)
                             } else {
-                                val newEvtId = System.currentTimeMillis()
                                 dbHelper.insertEvent(
                                     title = "Staycation - $shape",
                                     date = finalTargetDate,
@@ -402,18 +400,19 @@ private fun OwnerCalendarTabContent(
                                     shape = shape,
                                     color = colorLong
                                 )
-                                val eventMap = mapOf<String, Any>(
-                                    "id" to newEvtId.toString(),
-                                    "title" to "Staycation - $shape",
-                                    "date" to finalTargetDate,
-                                    "time" to finalCheckInTime,
-                                    "agent" to "Admin Owner",
-                                    "unit" to unitName,
-                                    "shape" to shape,
-                                    "color" to colorLong
-                                )
-                                FirebaseCloudSyncManager.pushEventToCloud(eventMap)
                             }
+
+                            val eventMap = mapOf<String, Any>(
+                                "title" to "Staycation - $shape",
+                                "date" to finalTargetDate,
+                                "time" to finalCheckInTime,
+                                "agent" to "Admin Owner",
+                                "unit" to unitName,
+                                "shape" to shape,
+                                "color" to colorLong,
+                                "updatedAt" to System.currentTimeMillis()
+                            )
+                            FirebaseCloudSyncManager.pushEventToCloud(eventMap)
                         }
 
                         refreshTrigger++
@@ -421,6 +420,10 @@ private fun OwnerCalendarTabContent(
                         Toast.makeText(context, if (isAvailableShape) "Unit $unitName set to Available! Tags cleaned." else "Tag $shape applied to $unitName for $finalTargetDate!", Toast.LENGTH_SHORT).show()
                     }
 
+                    val isNoPriceTag = shape.contains("Reserve", ignoreCase = true) ||
+                            shape.contains("Diamond", ignoreCase = true) ||
+                            shape.contains("Maintenance", ignoreCase = true) ||
+                            shape.contains("Circle", ignoreCase = true)
                     val (_, calculatedPriceStr) = EmailTemplateHelper.calculateBookingPrice(finalTargetDate, 2500.0)
                     EmailTemplateHelper.sendBookingEmail(
                         context = context,
@@ -430,7 +433,7 @@ private fun OwnerCalendarTabContent(
                         unitName = unitName,
                         statusLabel = shape,
                         dateText = finalTargetDate,
-                        amountText = calculatedPriceStr
+                        amountText = if (isNoPriceTag) "" else calculatedPriceStr
                     )
                 }
             )
@@ -596,6 +599,7 @@ private fun OwnerDashboardHomeContent(
     onNavigateToaddUnit: () -> Unit,
     onNavigateToInvoices: () -> Unit,
     onNavigateToAgents: () -> Unit,
+    onNavigateToBookingList: () -> Unit = {},
     @Suppress("UNUSED_PARAMETER") onNavigateToUnits: () -> Unit = {},
     @Suppress("UNUSED_PARAMETER") onNavigateToNotifications: () -> Unit = {}
 ) {
@@ -603,17 +607,30 @@ private fun OwnerDashboardHomeContent(
     val isPreview = androidx.compose.ui.platform.LocalInspectionMode.current
     val prefs = remember { context.getSharedPreferences("azure_calendar_profile_prefs", Context.MODE_PRIVATE) }
     val infoPrefs = remember { context.getSharedPreferences("azure_calendar_personal_info", Context.MODE_PRIVATE) }
+    val syncVersion = FirebaseCloudSyncManager.globalCloudSyncTrigger.intValue
     val dbHelper = remember { AzureDatabaseHelper(context) }
     val deletedPrefs = remember { context.getSharedPreferences("azure_calendar_deleted_units", Context.MODE_PRIVATE) }
-    val dbEventsState = remember { mutableStateOf<List<Map<String, String>>>(emptyList()) }
-    val dbUnitsState = remember { mutableStateOf<List<Map<String, Any>>>(emptyList()) }
+    val dbEventsState = remember(syncVersion) { mutableStateOf(if (isPreview) emptyList() else dbHelper.getAllEvents()) }
+    val dbUnitsState = remember(syncVersion) { mutableStateOf(if (isPreview) emptyList() else dbHelper.getAllUnits()) }
 
-    LaunchedEffect(Unit, FirebaseCloudSyncManager.globalCloudSyncTrigger.intValue) {
-        dbEventsState.value = dbHelper.getAllEvents()
-        dbUnitsState.value = dbHelper.getAllUnits()
+    LaunchedEffect(syncVersion) {
+        if (!isPreview) {
+            dbEventsState.value = dbHelper.getAllEvents()
+            dbUnitsState.value = dbHelper.getAllUnits()
+        }
     }
 
-    val metrics = remember(dbEventsState.value, dbUnitsState.value, isPreview) {
+    LaunchedEffect(Unit) {
+        if (!isPreview) {
+            while (true) {
+                dbEventsState.value = dbHelper.getAllEvents()
+                dbUnitsState.value = dbHelper.getAllUnits()
+                kotlinx.coroutines.delay(1000)
+            }
+        }
+    }
+
+    val metrics = remember(dbEventsState.value, dbUnitsState.value, syncVersion, isPreview) {
         if (isPreview) {
             OwnerMetricsData("20", "8", "7", "3", "1", "1", "₱45,000")
         } else {
@@ -635,7 +652,7 @@ private fun OwnerDashboardHomeContent(
             var occCount = 0
             var resCount = 0
             var maintCount = 0
-            var notAvailCount = 0
+            var rentedCount = 0
             var availCount = 0
 
             val realTimeToday = java.util.Calendar.getInstance()
@@ -648,31 +665,40 @@ private fun OwnerDashboardHomeContent(
 
             allUnitNums.forEach { uNum ->
                 val cleanU = uNum.replace("Unit", "", ignoreCase = true).trim()
-                val matchingTodayEvt = dbEvents.find { evt ->
+                val matchingTodayEvt = dbEvents.filter { evt ->
                     val evtDate = evt["date"] ?: ""
                     val evtUnit = evt["unit"] ?: ""
-                    val monthMatches = evtDate.contains(todayMonthShort, ignoreCase = true) || evtDate.contains(todayMonthFull, ignoreCase = true)
-                    val yearMatches = evtDate.contains(todayYear.toString())
-                    isSameUnit(evtUnit, cleanU) && monthMatches && yearMatches && isDateCoveredByEvent(evtDate, todayDayNum, todayMonthShort, todayYear)
+                    val evtTime = evt["time"] ?: "12:00 PM"
+                    val isExpired = FirebaseCloudSyncManager.isEventDateExpired(evtDate, evtTime)
+                    isSameUnit(evtUnit, cleanU) && !isExpired && isDateCoveredByEvent(evtDate, todayDayNum, todayMonthShort, todayYear)
+                }.firstOrNull { evt ->
+                    val shape = (evt["shape"] ?: "").lowercase()
+                    !shape.contains("available") || shape.contains("not")
+                } ?: dbEvents.find { evt ->
+                    val evtDate = evt["date"] ?: ""
+                    val evtUnit = evt["unit"] ?: ""
+                    val evtTime = evt["time"] ?: "12:00 PM"
+                    val isExpired = FirebaseCloudSyncManager.isEventDateExpired(evtDate, evtTime)
+                    isSameUnit(evtUnit, cleanU) && !isExpired && isDateCoveredByEvent(evtDate, todayDayNum, todayMonthShort, todayYear)
                 }
 
-                val masterStatus = dbUnits.find { isSameUnit(it["unitNumber"]?.toString() ?: "", cleanU) }?.get("status")?.toString()?.lowercase() ?: "available"
-                val activeStatus = when {
-                    matchingTodayEvt != null -> matchingTodayEvt["shape"]?.lowercase() ?: "available"
-                    masterStatus.contains("maintenance") || masterStatus.contains("rented (6+") || masterStatus.contains("not available") -> masterStatus
-                    else -> "available"
-                }
+                val matchedUnitMap = dbUnits.find { isSameUnit(it["unitNumber"]?.toString() ?: "", cleanU) }
+                val masterStatus = matchedUnitMap?.get("status")?.toString()?.ifBlank { "Available" } ?: "Available"
+                val activeStatus = matchingTodayEvt?.get("shape")?.ifBlank { null } ?: masterStatus
+                val s = activeStatus.lowercase().trim()
 
                 when {
-                    activeStatus.contains("check") || activeStatus.contains("heart") || activeStatus.contains("occup") -> occCount++
-                    activeStatus.contains("maintenance") || activeStatus.contains("circle") -> maintCount++
-                    activeStatus.contains("not") || activeStatus.contains("star") -> notAvailCount++
-                    activeStatus.contains("reserve") || activeStatus.contains("diamond") -> resCount++
+                    s.contains("rent") -> rentedCount++
+                    s.contains("maint") || s.contains("circle") -> maintCount++
+                    s.contains("reserv") || s.contains("diamond") -> resCount++
+                    s.contains("check") || s.contains("heart") || s.contains("occup") || s.contains("book") || s.contains("not") || s.contains("star") || s.contains("unavail") || s.contains("disable") -> occCount++
                     else -> availCount++
                 }
             }
 
             var thisMonthIncome = 0.0
+
+            // 1. Calculate revenue for Check-in bookings this month
             dbEvents.forEach { evt ->
                 val dateStr = evt["date"] ?: ""
                 val unitStr = evt["unit"] ?: ""
@@ -689,6 +715,28 @@ private fun OwnerDashboardHomeContent(
                 }
             }
 
+            // 2. Calculate monthly rental revenue for Rented units (every month)
+            allUnitNums.forEach { uNum ->
+                val cleanU = uNum.replace("Unit", "", ignoreCase = true).trim()
+                val matchedUnitMap = dbUnits.find { isSameUnit(it["unitNumber"]?.toString() ?: "", cleanU) }
+                val masterStatus = (matchedUnitMap?.get("status")?.toString() ?: "").lowercase()
+
+                val matchingTodayEvt = dbEvents.find { evt ->
+                    val evtDate = evt["date"] ?: ""
+                    val evtUnit = evt["unit"] ?: ""
+                    val evtTime = evt["time"] ?: "12:00 PM"
+                    val isExpired = FirebaseCloudSyncManager.isEventDateExpired(evtDate, evtTime)
+                    isSameUnit(evtUnit, cleanU) && !isExpired && isDateCoveredByEvent(evtDate, todayDayNum, todayMonthShort, todayYear)
+                }
+                val activeStatus = (matchingTodayEvt?.get("shape")?.ifBlank { null } ?: masterStatus).lowercase()
+
+                if (activeStatus.contains("rent") || masterStatus.contains("rent")) {
+                    val unitRate = (matchedUnitMap?.get("rate") as? Double) ?: 2500.0
+                    val monthlyRent = if (unitRate >= 10000.0) unitRate else unitRate * 30.0
+                    thisMonthIncome += monthlyRent
+                }
+            }
+
             val formattedIncome = "₱" + String.format("%,.0f", thisMonthIncome)
 
             OwnerMetricsData(
@@ -697,7 +745,7 @@ private fun OwnerDashboardHomeContent(
                 reserved = resCount.toString(),
                 occupied = occCount.toString(),
                 maintenance = maintCount.toString(),
-                notAvailable = notAvailCount.toString(),
+                rented = rentedCount.toString(),
                 income = formattedIncome
             )
         }
@@ -916,8 +964,8 @@ private fun OwnerDashboardHomeContent(
                         modifier = Modifier.weight(1f)
                     )
                     MetricCard(
-                        title = "Not Available",
-                        value = metrics.notAvailable,
+                        title = "Rented",
+                        value = metrics.rented,
                         icon = Icons.Default.Block,
                         iconTint = Color(0xFFC62828),
                         modifier = Modifier.weight(1f)
@@ -991,6 +1039,73 @@ private fun OwnerDashboardHomeContent(
             }
         }
 
+        // Booking List Action Banner
+        item {
+            Surface(
+                shape = RoundedCornerShape(18.dp),
+                color = PurplePrimary,
+                shadowElevation = 2.dp,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { onNavigateToBookingList() }
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 18.dp, vertical = 14.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Surface(
+                            shape = CircleShape,
+                            color = Color.White.copy(alpha = 0.2f),
+                            modifier = Modifier.size(38.dp)
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    imageVector = Icons.Default.FormatListBulleted,
+                                    contentDescription = "Booking List",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+                        }
+                        Column {
+                            Text(
+                                text = "Booking List & Directory",
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White
+                            )
+                            Text(
+                                text = "View & search all unit staycation bookings",
+                                fontSize = 11.sp,
+                                color = Color.White.copy(alpha = 0.85f)
+                            )
+                        }
+                    }
+                    Surface(
+                        shape = CircleShape,
+                        color = Color.White.copy(alpha = 0.2f),
+                        modifier = Modifier.size(32.dp)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                imageVector = Icons.Default.ArrowForward,
+                                contentDescription = "Open Booking List",
+                                tint = Color.White,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
         // Quick Actions Section
         item {
             Spacer(modifier = Modifier.height(4.dp))
@@ -1002,28 +1117,37 @@ private fun OwnerDashboardHomeContent(
             )
             Spacer(modifier = Modifier.height(12.dp))
 
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                QuickActionCard(
-                    title = "Add Unit",
-                    icon = Icons.Default.Add,
-                    onClick = onNavigateToaddUnit,
-                    modifier = Modifier.weight(1f)
-                )
-                QuickActionCard(
-                    title = "Invoices",
-                    icon = Icons.Default.ReceiptLong,
-                    onClick = onNavigateToInvoices,
-                    modifier = Modifier.weight(1f)
-                )
-                QuickActionCard(
-                    title = "Agents",
-                    icon = Icons.Default.Group,
-                    onClick = onNavigateToAgents,
-                    modifier = Modifier.weight(1f)
-                )
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    QuickActionCard(
+                        title = "Add Unit",
+                        icon = Icons.Default.Add,
+                        onClick = onNavigateToaddUnit,
+                        modifier = Modifier.weight(1f)
+                    )
+                    QuickActionCard(
+                        title = "Invoices",
+                        icon = Icons.Default.ReceiptLong,
+                        onClick = onNavigateToInvoices,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    QuickActionCard(
+                        title = "Agents",
+                        icon = Icons.Default.Group,
+                        onClick = onNavigateToAgents,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Spacer(modifier = Modifier.weight(1f))
+                }
             }
         }
 
@@ -1252,10 +1376,11 @@ private fun OwnerUnitsTabContent(onTabSelected: (Int) -> Unit) {
                     if (isAvailableShape) {
                         dbHelper.deleteEventsForUnit(unitName, syncToCloud = true)
                     } else {
-                        val existingEvents = dbHelper.getAllEvents().filter { isSameUnit(it["unit"] ?: "", unitName) }
-                        if (existingEvents.isNotEmpty()) {
-                            val firstEvt = existingEvents.first()
-                            val evtId = firstEvt["id"]?.toLongOrNull() ?: System.currentTimeMillis()
+                        val targetEvents = dbHelper.getAllEvents().filter {
+                            isSameUnit(it["unit"] ?: "", unitName) && (it["date"] == finalTargetDate || it["date"]?.contains(finalTargetDate) == true)
+                        }
+                        if (targetEvents.isNotEmpty()) {
+                            val evtId = targetEvents.first()["id"]?.toLongOrNull() ?: System.currentTimeMillis()
                             dbHelper.updateEvent(
                                 id = evtId,
                                 title = "Staycation - $shape",
@@ -1266,19 +1391,7 @@ private fun OwnerUnitsTabContent(onTabSelected: (Int) -> Unit) {
                                 shape = shape,
                                 color = colorLong
                             )
-                            val eventMap = mapOf<String, Any>(
-                                "id" to evtId.toString(),
-                                "title" to "Staycation - $shape",
-                                "date" to finalTargetDate,
-                                "time" to finalCheckInTime,
-                                "agent" to "Admin Owner",
-                                "unit" to unitName,
-                                "shape" to shape,
-                                "color" to colorLong
-                            )
-                            FirebaseCloudSyncManager.pushEventToCloud(eventMap)
                         } else {
-                            val newEvtId = System.currentTimeMillis()
                             dbHelper.insertEvent(
                                 title = "Staycation - $shape",
                                 date = finalTargetDate,
@@ -1288,18 +1401,19 @@ private fun OwnerUnitsTabContent(onTabSelected: (Int) -> Unit) {
                                 shape = shape,
                                 color = colorLong
                             )
-                            val eventMap = mapOf<String, Any>(
-                                "id" to newEvtId.toString(),
-                                "title" to "Staycation - $shape",
-                                "date" to finalTargetDate,
-                                "time" to finalCheckInTime,
-                                "agent" to "Admin Owner",
-                                "unit" to unitName,
-                                "shape" to shape,
-                                "color" to colorLong
-                            )
-                            FirebaseCloudSyncManager.pushEventToCloud(eventMap)
                         }
+
+                        val eventMap = mapOf<String, Any>(
+                            "title" to "Staycation - $shape",
+                            "date" to finalTargetDate,
+                            "time" to finalCheckInTime,
+                            "agent" to "Admin Owner",
+                            "unit" to unitName,
+                            "shape" to shape,
+                            "color" to colorLong,
+                            "updatedAt" to System.currentTimeMillis()
+                        )
+                        FirebaseCloudSyncManager.pushEventToCloud(eventMap)
                     }
 
                     refreshTrigger++
@@ -1307,6 +1421,10 @@ private fun OwnerUnitsTabContent(onTabSelected: (Int) -> Unit) {
                     Toast.makeText(context, if (isAvailableShape) "Unit $unitName set to Available! Tags cleaned." else "Tag $shape applied to $unitName for $finalTargetDate!", Toast.LENGTH_SHORT).show()
                 }
 
+                val isNoPriceTag = shape.contains("Reserve", ignoreCase = true) ||
+                        shape.contains("Diamond", ignoreCase = true) ||
+                        shape.contains("Maintenance", ignoreCase = true) ||
+                        shape.contains("Circle", ignoreCase = true)
                 val (_, calculatedPriceStr) = EmailTemplateHelper.calculateBookingPrice(finalTargetDate, 2500.0)
                 EmailTemplateHelper.sendBookingEmail(
                     context = context,
@@ -1316,7 +1434,7 @@ private fun OwnerUnitsTabContent(onTabSelected: (Int) -> Unit) {
                     unitName = unitName,
                     statusLabel = shape,
                     dateText = finalTargetDate,
-                    amountText = calculatedPriceStr
+                    amountText = if (isNoPriceTag) "" else calculatedPriceStr
                 )
             }
         )

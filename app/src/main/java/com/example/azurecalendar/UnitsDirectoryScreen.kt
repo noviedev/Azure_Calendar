@@ -190,7 +190,7 @@ fun UnitsDirectoryScreen(
     var searchQuery by rememberSaveable { mutableStateOf("") }
     var selectedFilter by rememberSaveable { mutableStateOf("All") }
     val listState = rememberLazyListState()
-    val filters = listOf("All", "Available", "Check-in", "Reserved", "Rented", "Under Maintenance", "Not Available")
+    val filters = listOf("All", "Available", "Check-in", "Reserved", "Rented", "Under Maintenance")
 
     val dbEventsState = remember { mutableStateOf<List<Map<String, String>>>(emptyList()) }
     val dbUnitsState = remember { mutableStateOf<List<Map<String, Any>>>(emptyList()) }
@@ -280,14 +280,7 @@ fun UnitsDirectoryScreen(
                         else -> shape.ifBlank { "Available" }
                     }
                 }
-                else -> {
-                    val master = unitItem.status
-                    if (master.contains("Maintenance", ignoreCase = true) || master.contains("Rented", ignoreCase = true) || master.contains("Not Available", ignoreCase = true)) {
-                        master
-                    } else {
-                        "Available"
-                    }
-                }
+                else -> unitItem.status.ifBlank { "Available" }
             }
 
             unitItem.copy(status = dynamicStatus)

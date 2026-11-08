@@ -504,36 +504,53 @@ fun AddEditUnitScreenPreview() {
 fun saveUnitPhotoToInternalStorage(context: android.content.Context, uri: Uri, unitName: String): String? {
     return try {
         val fileName = "unit_photo_${unitName.replace(" ", "_").lowercase()}.jpg"
-        val inputStream = context.contentResolver.openInputStream(uri) ?: return null
-        val originalBitmap = android.graphics.BitmapFactory.decodeStream(inputStream)
-        inputStream.close()
-
-        if (originalBitmap == null) return null
+        val options = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        context.contentResolver.openInputStream(uri)?.use { stream ->
+            android.graphics.BitmapFactory.decodeStream(stream, null, options)
+        }
 
         val maxDim = 1024
+        var inSampleSize = 1
+        if (options.outWidth > maxDim || options.outHeight > maxDim) {
+            val halfWidth = options.outWidth / 2
+            val halfHeight = options.outHeight / 2
+            while (halfWidth / inSampleSize >= maxDim && halfHeight / inSampleSize >= maxDim) {
+                inSampleSize *= 2
+            }
+        }
+
+        options.inSampleSize = inSampleSize
+        options.inJustDecodeBounds = false
+
+        val originalBitmap = context.contentResolver.openInputStream(uri)?.use { stream ->
+            android.graphics.BitmapFactory.decodeStream(stream, null, options)
+        } ?: return null
+
         val width = originalBitmap.width
         val height = originalBitmap.height
-        val scale = if (width > height) maxDim.toFloat() / width else maxDim.toFloat() / height
+        val scale = if (width > maxDim || height > maxDim) {
+            if (width > height) maxDim.toFloat() / width else maxDim.toFloat() / height
+        } else {
+            1f
+        }
         val scaledWidth = (width * scale).toInt().coerceAtLeast(1)
         val scaledHeight = (height * scale).toInt().coerceAtLeast(1)
 
-        val scaledBitmap = if (width > maxDim || height > maxDim) {
-            android.graphics.Bitmap.createScaledBitmap(originalBitmap, scaledWidth, scaledHeight, true)
+        val scaledBitmap = if (scale < 1f) {
+            android.graphics.Bitmap.createScaledBitmap(originalBitmap, scaledWidth, scaledHeight, true).also {
+                if (it != originalBitmap) originalBitmap.recycle()
+            }
         } else {
             originalBitmap
         }
 
         val file = java.io.File(context.filesDir, fileName)
-        val outputStream = java.io.FileOutputStream(file)
-        scaledBitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 90, outputStream)
-        outputStream.flush()
-        outputStream.close()
-
-        if (scaledBitmap != originalBitmap) {
-            scaledBitmap.recycle()
+        java.io.FileOutputStream(file).use { outputStream ->
+            scaledBitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 90, outputStream)
+            outputStream.flush()
         }
-        originalBitmap.recycle()
 
+        scaledBitmap.recycle()
         file.absolutePath
     } catch (_: Throwable) {
         null

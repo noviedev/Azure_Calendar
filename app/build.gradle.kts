@@ -19,7 +19,11 @@ android {
     }
 
     buildTypes {
+        debug {
+            isDebuggable = true
+        }
         release {
+            isDebuggable = false
             optimization {
                 enable = false
             }
@@ -34,18 +38,7 @@ android {
     }
 }
 
-tasks.matching { it.name.startsWith("map") && it.name.endsWith("SourceSetPaths") }.configureEach {
-    doFirst {
-        val mapDir = file("build/intermediates/android_res_source_set_path_map/debug/mapDebugSourceSetPaths")
-        if (!mapDir.exists()) {
-            mapDir.mkdirs()
-        }
-        val fileMap = file("build/intermediates/android_res_source_set_path_map/debug/mapDebugSourceSetPaths/file-map.txt")
-        if (fileMap.exists()) {
-            try { fileMap.delete() } catch (_: Exception) {}
-        }
-    }
-}
+
 
 dependencies {
     // Firebase

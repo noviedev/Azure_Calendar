@@ -6,6 +6,7 @@ import android.util.Log
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -14,6 +15,7 @@ import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.lifecycleScope
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.userProfileChangeRequest
+import com.google.firebase.firestore.FirebaseFirestore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -23,23 +25,32 @@ class MainActivity : FragmentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // Log uncaught exceptions and pass to default handler
+        // Log uncaught exceptions safely and pass to default handler
         val defaultHandler = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
+            val isAgentAttachNotice = throwable.stackTrace.any { 
+                it.className.contains("ActivityThread") && (it.methodName == "attachAgent" || it.methodName == "sendMessage")
+            }
+            if (isAgentAttachNotice) {
+                Log.w("CrashProtection", "Handled benign ActivityThread agent attachment notice: ${throwable.message}")
+                return@setDefaultUncaughtExceptionHandler
+            }
             Log.e("CrashProtection", "Uncaught exception in thread ${thread.name}: ${throwable.message}", throwable)
             defaultHandler?.uncaughtException(thread, throwable)
         }
 
         val dbHelper = AzureDatabaseHelper(this)
-        try {
-            val allUnits = dbHelper.getAllUnits()
-            val allEvents = dbHelper.getAllEvents()
-            Log.d("AzureDatabase", "Loaded ${allEvents.size} events and ${allUnits.size} units.")
+        lifecycleScope.launch(Dispatchers.IO) {
+            try {
+                val allUnits = dbHelper.getAllUnits()
+                val allEvents = dbHelper.getAllEvents()
+                Log.d("AzureDatabase", "Loaded ${allEvents.size} events and ${allUnits.size} units.")
 
-            dbHelper.deleteEvent(-999L)
-            dbHelper.deleteUnit("TEMP_UNIT")
-        } catch (t: Throwable) {
-            Log.e("MainActivity", "DB init catch: ${t.message}")
+                dbHelper.deleteEvent(-999L)
+                dbHelper.deleteUnit("TEMP_UNIT")
+            } catch (t: Throwable) {
+                Log.e("MainActivity", "DB init catch: ${t.message}")
+            }
         }
 
         val sessionManager = UserSessionManager(this)
@@ -51,6 +62,7 @@ class MainActivity : FragmentActivity() {
         }
         val initialUsername = sessionManager.getUsername()
 
+        // Safely fetch remote XAMPP data in background without blocking UI or throwing unhandled exceptions
         lifecycleScope.launch {
             try {
                 fetchData()
@@ -64,6 +76,9 @@ class MainActivity : FragmentActivity() {
             var currentScreen by rememberSaveable { mutableStateOf(initialScreen) }
             var registeredAgentName by rememberSaveable { mutableStateOf(initialUsername) }
 
+            // Global trigger state so Compose UI updates instantly on every cloud snapshot change
+            val syncVersion = FirebaseCloudSyncManager.globalCloudSyncTrigger.intValue
+
             BackHandler(enabled = currentScreen != "landing" && currentScreen != "welcome" && currentScreen != "agent_dashboard") {
                 currentScreen = when (currentScreen) {
                     "login", "register" -> "welcome"
@@ -76,35 +91,39 @@ class MainActivity : FragmentActivity() {
                 }
             }
 
-            // 1. Unconditionally start real-time Firestore cloud listeners on app launch
+            // 1. Unconditionally start real-time Firestore cloud listeners on app launch with Network enforcement
             LaunchedEffect(Unit) {
                 val auth = FirebaseAuth.getInstance()
                 val startListeners = {
-                    FirebaseCloudSyncManager.startRealtimeCloudListener(context, forceRestart = true)
-                    FirebaseCloudSyncManager.syncAllLocalUnitsToCloud(context)
-                }
+                    try {
+                        FirebaseFirestore.getInstance().enableNetwork()
+                    } catch (_: Exception) {}
 
-                // Start listeners immediately so devices don't wait on auth timeout
-                startListeners()
+                    FirebaseCloudSyncManager.startRealtimeCloudListener(context, forceRestart = true)
+                }
 
                 if (auth.currentUser == null) {
                     try {
                         auth.signInAnonymously()
                             .addOnSuccessListener {
-                                Log.d("CloudSync", "Anonymous auth success, restarting listeners")
+                                Log.d("CloudSync", "Anonymous auth success, starting listeners")
                                 startListeners()
                             }
                             .addOnFailureListener { e ->
                                 Log.e("CloudSync", "Anonymous auth failed: ${e.message}")
+                                startListeners() // Start anyway using offline/cached fallback or rules
                             }
                     } catch (e: Exception) {
                         Log.e("CloudSync", "Auth exception: ${e.message}")
+                        startListeners()
                     }
+                } else {
+                    startListeners()
                 }
             }
 
             // 2. Sync catalog & restart listener whenever switching screens (and enforce agent deletion revocation)
-            LaunchedEffect(currentScreen) {
+            LaunchedEffect(currentScreen, syncVersion) {
                 val deletedPrefs = context.getSharedPreferences("azure_calendar_deleted_agents", Context.MODE_PRIVATE)
                 val deletedSet = deletedPrefs.getStringSet("deleted_agent_keys", emptySet()).orEmpty()
                 val loggedUser = sessionManager.getUsername().trim().lowercase()
@@ -120,7 +139,6 @@ class MainActivity : FragmentActivity() {
 
                 if (currentScreen == "owner_dashboard" || currentScreen == "agent_dashboard" || currentScreen == "units_directory") {
                     FirebaseCloudSyncManager.startRealtimeCloudListener(context, forceRestart = false)
-                    FirebaseCloudSyncManager.syncAllLocalUnitsToCloud(context)
                 }
             }
 
@@ -164,10 +182,10 @@ class MainActivity : FragmentActivity() {
                                 val userKey = if (isAdminUser) "Admin" else cleanEmail.substringBefore("@").lowercase()
 
                                 val isDeletedAgent = !isAdminUser && (
-                                    deletedSet.contains(cleanEmail.lowercase()) ||
-                                    deletedSet.contains(cleanEmail.substringBefore("@").lowercase()) ||
-                                    deletedSet.contains(userKey)
-                                )
+                                        deletedSet.contains(cleanEmail.lowercase()) ||
+                                                deletedSet.contains(cleanEmail.substringBefore("@").lowercase()) ||
+                                                deletedSet.contains(userKey)
+                                        )
 
                                 if (isDeletedAgent) {
                                     Toast.makeText(context, "This agent account has been permanently deleted by the Property Owner. Login access is revoked.", Toast.LENGTH_LONG).show()
@@ -187,7 +205,6 @@ class MainActivity : FragmentActivity() {
                                         if (isNameDeleted) {
                                             Toast.makeText(context, "This agent account has been permanently deleted by the Property Owner. Login access is revoked.", Toast.LENGTH_LONG).show()
                                         } else {
-                                            // Ensure agent exists in local DB and Cloud so all devices stay in sync
                                             if (!isAdminUser && matchedAgent == null) {
                                                 dbHelper.insertAgent(name, cleanEmail, "", role, "Female")
                                                 FirebaseCloudSyncManager.pushAgentToCloud(name, cleanEmail, "", role, "Female")
@@ -201,15 +218,12 @@ class MainActivity : FragmentActivity() {
                                         }
                                     }
 
-                                    // 1. Check local password if saved on this device, or default password
                                     if ((savedPassword != null && cleanPassword == savedPassword) || cleanPassword == defaultPass) {
                                         completeLogin()
                                     } else {
-                                        // 2. Fallback: Check Firebase Auth for accounts created on another phone!
                                         FirebaseAuth.getInstance().signInWithEmailAndPassword(cleanEmail, cleanPassword)
                                             .addOnCompleteListener { task ->
                                                 if (task.isSuccessful) {
-                                                    // Cache password locally on this second device for next time
                                                     securityPrefs.edit().putString("password_$userKey", cleanPassword).apply()
                                                     completeLogin()
                                                 } else {
@@ -364,11 +378,9 @@ class MainActivity : FragmentActivity() {
                         AddEditUnitScreen(
                             onBackClick = { currentScreen = "owner_dashboard" },
                             onSaveSuccess = {
-                                FirebaseCloudSyncManager.syncAllLocalUnitsToCloud(context)
                                 currentScreen = "owner_dashboard"
                             },
                             onDeleteUnit = {
-                                FirebaseCloudSyncManager.syncAllLocalUnitsToCloud(context)
                                 currentScreen = "owner_dashboard"
                             }
                         )
@@ -395,16 +407,18 @@ class MainActivity : FragmentActivity() {
         withContext(Dispatchers.IO) {
             try {
                 val response = RetrofitClient.api.getAllUsers()
-                val userList = response.body()?.data
-                if (response.isSuccessful && userList != null) {
-                    for (user in userList) {
-                        Log.d("XAMPP_SUCCESS", "Found User: ${user.name} | Role: ${user.role} | Email: ${user.email}")
+                if (response.isSuccessful) {
+                    val userList = response.body()?.data
+                    if (userList != null) {
+                        for (user in userList) {
+                            Log.d("XAMPP_SUCCESS", "Found User: ${user.name} | Role: ${user.role} | Email: ${user.email}")
+                        }
                     }
                 } else {
-                    Log.e("XAMPP_ERROR", "Server returned code: ${response.code()}")
+                    Log.d("XAMPP_INFO", "XAMPP server inactive or unreachable (Status: ${response.code()}) - operating in offline/cloud sync mode.")
                 }
             } catch (t: Throwable) {
-                Log.e("XAMPP_ERROR", "Failed to connect: ${t.message}")
+                Log.d("XAMPP_INFO", "XAMPP backend not detected (Running on Firebase Cloud Sync mode).")
             }
         }
     }

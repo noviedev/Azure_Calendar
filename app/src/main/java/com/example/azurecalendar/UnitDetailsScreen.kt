@@ -128,11 +128,7 @@ fun UnitDetailsScreen(
                 isSameUnit(uNum, unitName)
             }
             val raw = match?.get("status")?.toString() ?: "Available"
-            currentStatus = if (raw.contains("Maintenance", ignoreCase = true) || raw.contains("Rented", ignoreCase = true) || raw.contains("Not Available", ignoreCase = true)) {
-                raw
-            } else {
-                "Available"
-            }
+            currentStatus = raw.ifBlank { "Available" }
         }
     }
 
