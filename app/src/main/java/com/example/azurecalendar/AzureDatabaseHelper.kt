@@ -304,6 +304,20 @@ class AzureDatabaseHelper(context: Context) : SQLiteOpenHelper(context.applicati
         val cleanUnit = unit.replace("Unit", "", ignoreCase = true).trim()
         val normalizedUnit = if (isGeneralEvent) "Event" else "Unit $cleanUnit"
 
+        if (!isGeneralEvent && cleanUnit.isNotBlank() && date.isNotBlank()) {
+            db.delete(
+                TABLE_EVENTS,
+                "$COLUMN_DATE = ? AND ($COLUMN_UNIT LIKE ? OR $COLUMN_UNIT LIKE ? OR $COLUMN_UNIT = ?)",
+                arrayOf(date, "%$cleanUnit%", "%$normalizedUnit%", unit)
+            )
+        } else if (isGeneralEvent) {
+            db.delete(
+                TABLE_EVENTS,
+                "$COLUMN_TITLE = ? AND $COLUMN_DATE = ?",
+                arrayOf(title, date)
+            )
+        }
+
         val values = ContentValues().apply {
             put(COLUMN_TITLE, title)
             put(COLUMN_DATE, date)
@@ -336,6 +350,12 @@ class AzureDatabaseHelper(context: Context) : SQLiteOpenHelper(context.applicati
                 TABLE_EVENTS,
                 "$COLUMN_DATE = ? AND ($COLUMN_UNIT LIKE ? OR $COLUMN_UNIT LIKE ? OR $COLUMN_UNIT = ?)",
                 arrayOf(date, "%$cleanUnit%", "%$normalizedUnit%", unit)
+            )
+        } else {
+            db.delete(
+                TABLE_EVENTS,
+                "$COLUMN_TITLE = ? AND $COLUMN_DATE = ?",
+                arrayOf(title, date)
             )
         }
 
@@ -399,7 +419,13 @@ class AzureDatabaseHelper(context: Context) : SQLiteOpenHelper(context.applicati
             } while (cursor.moveToNext())
         }
         cursor.close()
-        return list
+        return list.distinctBy {
+            val u = (it["unit"] ?: "").replace("Unit", "", ignoreCase = true).trim().lowercase()
+            val d = (it["date"] ?: "").trim().lowercase()
+            val s = (it["shape"] ?: "").trim().lowercase()
+            val t = (it["title"] ?: "").trim().lowercase()
+            if (u == "event" || s.contains("owner event")) "${t}_${d}_${s}" else "${u}_${d}"
+        }
     }
 
     fun deleteEvent(id: Long) {

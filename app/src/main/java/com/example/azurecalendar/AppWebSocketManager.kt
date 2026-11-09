@@ -2,42 +2,63 @@ package com.example.azurecalendar
 
 import android.util.Log
 import okhttp3.*
+import java.util.concurrent.TimeUnit
 
 class AppWebSocketManager(private val onStatusUpdated: (String) -> Unit) {
     private var webSocket: WebSocket? = null
-    private val client = OkHttpClient()
+    private val client = OkHttpClient.Builder()
+        .readTimeout(10, TimeUnit.SECONDS)
+        .writeTimeout(10, TimeUnit.SECONDS)
+        .pingInterval(15, TimeUnit.SECONDS)
+        .build()
 
-    fun connect(serverUrl: String) {
-        val request = Request.Builder().url(serverUrl).build()
+    private var currentUrl: String = "wss://echo.websocket.events"
 
-        webSocket = client.newWebSocket(request, object : WebSocketListener() {
-            override fun onOpen(webSocket: WebSocket, response: Response) {
-                Log.d("WebSocket", "Connected to WebSocket server successfully!")
-            }
+    fun connect(serverUrl: String = "wss://echo.websocket.events") {
+        this.currentUrl = serverUrl
+        if (webSocket != null) return
 
-            override fun onMessage(webSocket: WebSocket, text: String) {
-                Log.d("WebSocket", "Received real-time update: $text")
-                // Pass incoming status change back to UI / database helper
-                onStatusUpdated(text)
-            }
+        try {
+            val request = Request.Builder().url(serverUrl).build()
+            webSocket = client.newWebSocket(request, object : WebSocketListener() {
+                override fun onOpen(webSocket: WebSocket, response: Response) {
+                    Log.d("WebSocket", "Connected to Realtime WebSocket Server successfully!")
+                    webSocket.send("{\"type\":\"JOIN\", \"app\":\"AzureCalendar\"}")
+                }
 
-            override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
-                Log.d("WebSocket", "Connection closing: $reason")
-                webSocket.close(1000, null)
-            }
+                override fun onMessage(webSocket: WebSocket, text: String) {
+                    Log.d("WebSocket", "Received Realtime WebSocket Broadcast: $text")
+                    onStatusUpdated(text)
+                }
 
-            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                Log.e("WebSocket", "Connection failed: {t.message}")
-            }
-        })
+                override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+                    Log.d("WebSocket", "WebSocket connection closing: $reason")
+                    webSocket.close(1000, null)
+                    this@AppWebSocketManager.webSocket = null
+                }
+
+                override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                    Log.w("WebSocket", "WebSocket connection message/failure: ${t.message}")
+                    this@AppWebSocketManager.webSocket = null
+                }
+            })
+        } catch (e: Exception) {
+            Log.e("WebSocket", "WebSocket connection error: ${e.message}")
+        }
     }
 
-    fun sendMessage(message: String) {
-        webSocket?.send(message)
+    fun broadcastUpdate(message: String) {
+        try {
+            webSocket?.send(message)
+        } catch (e: Exception) {
+            Log.e("WebSocket", "Broadcast error: ${e.message}")
+        }
     }
 
     fun disconnect() {
-        webSocket?.close(1000, "Client disconnecting")
+        try {
+            webSocket?.close(1000, "Client disconnecting")
+        } catch (_: Exception) {}
         webSocket = null
     }
 }

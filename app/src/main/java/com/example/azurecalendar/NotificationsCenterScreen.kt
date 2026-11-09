@@ -205,27 +205,37 @@ fun NotificationsCenterScreen(
         val sessionName = sessionManager.getUsername().trim().lowercase()
         val cleanParamName = agentName.trim().lowercase()
 
+        val infoPrefs = context.getSharedPreferences("azure_calendar_personal_info", Context.MODE_PRIVATE)
+        val storedEmail = infoPrefs.getString("email_$agentName", "") ?: ""
+        val emailPrefix = storedEmail.substringBefore("@").trim().lowercase()
+
         val filtered = if (isOwnerMode) {
             combinedEvents
         } else {
             combinedEvents.filter { event ->
                 val target = event.targetAgent.trim()
                 val targetClean = target.lowercase()
-                if (target.isBlank() || targetClean.contains("all")) {
+
+                // If target is blank or "All Agents", all agents join automatically.
+                if (target.isBlank() || targetClean.contains("all agents") || targetClean == "all") {
                     true
                 } else {
-                    val paramFirstWord = cleanParamName.substringBefore(" ")
-                    val sessionFirstWord = sessionName.substringBefore(" ")
+                    // Check if targetAgent contains this specific agent's name, username, or email token
+                    val paramTokens = cleanParamName.split(" ", ",", ".").filter { it.length >= 3 }
+                    val sessionTokens = sessionName.split(" ", ",", ".").filter { it.length >= 3 }
+                    val emailTokens = emailPrefix.split(" ", ",", ".").filter { it.length >= 3 }
+                    val allTokens = (paramTokens + sessionTokens + emailTokens).distinct()
 
                     targetClean.contains(cleanParamName) ||
                     cleanParamName.contains(targetClean) ||
                     (sessionName.isNotBlank() && (targetClean.contains(sessionName) || sessionName.contains(targetClean))) ||
-                    (paramFirstWord.length >= 3 && targetClean.contains(paramFirstWord)) ||
-                    (sessionFirstWord.length >= 3 && targetClean.contains(sessionFirstWord)) ||
+                    (emailPrefix.isNotBlank() && targetClean.contains(emailPrefix)) ||
+                    allTokens.any { token -> targetClean.contains(token) } ||
                     UserSessionManager.isSameCreator(target, agentName)
                 }
             }
         }
+
         filtered.sortedByDescending { event ->
             val chatRoomId = FirebaseCloudSyncManager.getNormalizedEventId(event.id, event.title)
             val dbMsgs = dbHelper.getChatMessagesForRoom(chatRoomId)
@@ -946,8 +956,10 @@ fun EventGroupChatView(
         FirebaseCloudSyncManager.getNormalizedEventId(event.id, event.title)
     }
 
+    val syncTrigger = FirebaseCloudSyncManager.globalCloudSyncTrigger.intValue
+
     // Load persisted chat history from local SQLite database first
-    val dbMessages = remember(chatRoomId) {
+    val dbMessages = remember(chatRoomId, syncTrigger) {
         dbHelper.getChatMessagesForRoom(chatRoomId)
     }
 
@@ -966,10 +978,11 @@ fun EventGroupChatView(
         }
     }
 
-    val displayMessages = remember(dbMessages, memoryMessages.toList(), cloudMessages) {
-        val combined = (dbMessages + memoryMessages + cloudMessages)
+    val displayMessages = remember(dbMessages, memoryMessages.toList(), cloudMessages, syncTrigger) {
+        val liveDbMsgs = dbHelper.getChatMessagesForRoom(chatRoomId)
+        val combined = (liveDbMsgs + dbMessages + memoryMessages + cloudMessages)
         combined.distinctBy { "${it.senderName.trim().lowercase()}_${it.messageText.trim()}_${it.timestamp}" }
-            .sortedBy { it.id }
+            .sortedBy { if (it.createdTime > 0L) it.createdTime else it.id.replace(Regex("[^0-9]"), "").toLongOrNull() ?: 0L }
     }
 
     LaunchedEffect(displayMessages.size, chatRoomId) {

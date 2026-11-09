@@ -263,7 +263,7 @@ fun BookingListScreen(
     var searchQuery by remember { mutableStateOf("") }
     var selectedFilter by remember { mutableStateOf("All") }
 
-    val filterOptions = listOf("All", "Check-in", "Reserved")
+    val filterOptions = listOf("All", "Check-in", "Reserved", "Rented")
 
     val dbEventsState = remember(syncTick) { mutableStateOf(if (isPreview) emptyList() else dbHelper.getAllEvents()) }
     val dbUnitsState = remember(syncTick) { mutableStateOf(if (isPreview) emptyList() else dbHelper.getAllUnits()) }
@@ -309,7 +309,7 @@ fun BookingListScreen(
 
         val items = mutableListOf<BookingListItemData>()
 
-        // 1. Process all active booking events from database that are Reserved or Check-in
+        // 1. Process all active booking events from database that are Reserved, Check-in, or Rented
         dbEvents.forEach { evt ->
             val evtUnit = evt["unit"] ?: ""
             val cleanU = evtUnit.replace("Unit", "", ignoreCase = true).trim()
@@ -319,6 +319,7 @@ fun BookingListScreen(
             val statusCategory = when {
                 rawStatus.contains("Check", ignoreCase = true) || rawStatus.contains("Heart", ignoreCase = true) -> "Check-in"
                 rawStatus.contains("Reserve", ignoreCase = true) || rawStatus.contains("Diamond", ignoreCase = true) -> "Reserved"
+                rawStatus.contains("Rent", ignoreCase = true) || rawStatus.contains("Star", ignoreCase = true) -> "Rented"
                 else -> ""
             }
 
@@ -329,7 +330,16 @@ fun BookingListScreen(
                 val evtTime = evt["time"]?.ifBlank { "2:00 PM" } ?: "2:00 PM"
                 val agent = evt["agent"]?.ifBlank { if (isOwnerMode) "Admin Owner" else "Agent" } ?: if (isOwnerMode) "Admin Owner" else "Agent"
                 val unitRate = (matchedUnitRow?.get("rate") as? Double) ?: 2500.0
-                val priceFormatted = "₱" + String.format("%,.0f", unitRate)
+
+                // Reserved tag MUST NOT have a price; Check-in and Rented have price displayed!
+                val priceFormatted = when (statusCategory) {
+                    "Reserved" -> ""
+                    "Rented" -> {
+                        val monthlyVal = if (unitRate >= 10000.0) unitRate else unitRate * 30.0
+                        "₱" + String.format("%,.0f", monthlyVal) + " / month"
+                    }
+                    else -> "₱" + String.format("%,.0f", unitRate)
+                }
 
                 items.add(
                     BookingListItemData(
@@ -338,7 +348,11 @@ fun BookingListScreen(
                         date = evtDate,
                         time = evtTime,
                         agent = agent,
-                        status = if (statusCategory == "Reserved") "Reserved Tag" else "Check-In Tag",
+                        status = when (statusCategory) {
+                            "Reserved" -> "Reserved Tag"
+                            "Rented" -> "Rented Tag"
+                            else -> "Check-In Tag"
+                        },
                         statusCategory = statusCategory,
                         price = priceFormatted
                     )
@@ -346,7 +360,7 @@ fun BookingListScreen(
             }
         }
 
-        // 2. Also check unit master statuses for any Reserved or Check-in units
+        // 2. Also check unit master statuses for any Reserved, Check-in, or Rented units
         unitList.forEach { unitName ->
             val cleanU = unitName.replace("Unit", "", ignoreCase = true).trim()
             val matchedUnitRow = dbUnits.find { isSameUnit(it["unitNumber"]?.toString() ?: "", cleanU) }
@@ -355,6 +369,7 @@ fun BookingListScreen(
             val statusCategory = when {
                 masterStatus.contains("Check", ignoreCase = true) || masterStatus.contains("Heart", ignoreCase = true) -> "Check-in"
                 masterStatus.contains("Reserve", ignoreCase = true) || masterStatus.contains("Diamond", ignoreCase = true) -> "Reserved"
+                masterStatus.contains("Rent", ignoreCase = true) -> "Rented"
                 else -> ""
             }
 
@@ -362,15 +377,33 @@ fun BookingListScreen(
                 val alreadyAdded = items.any { isSameUnit(it.unitName, cleanU) && it.statusCategory == statusCategory }
                 if (!alreadyAdded) {
                     val unitRate = (matchedUnitRow?.get("rate") as? Double) ?: 2500.0
-                    val priceFormatted = "₱" + String.format("%,.0f", unitRate)
+
+                    // Reserved tag MUST NOT have a price; Check-in and Rented have price displayed!
+                    val priceFormatted = when (statusCategory) {
+                        "Reserved" -> ""
+                        "Rented" -> {
+                            val monthlyVal = if (unitRate >= 10000.0) unitRate else unitRate * 30.0
+                            "₱" + String.format("%,.0f", monthlyVal) + " / month"
+                        }
+                        else -> "₱" + String.format("%,.0f", unitRate)
+                    }
+
                     items.add(
                         BookingListItemData(
                             unitName = unitName,
-                            title = if (statusCategory == "Reserved") "Staycation Reservation" else "Staycation Check-in",
+                            title = when (statusCategory) {
+                                "Reserved" -> "Staycation Reservation"
+                                "Rented" -> "Long Term Lease"
+                                else -> "Staycation Check-in"
+                            },
                             date = "$todayMonthShort $todayDayNum, $todayYear",
                             time = "2:00 PM",
                             agent = if (isOwnerMode) "Admin Owner" else "Agent",
-                            status = if (statusCategory == "Reserved") "Reserved Tag" else "Check-In Tag",
+                            status = when (statusCategory) {
+                                "Reserved" -> "Reserved Tag"
+                                "Rented" -> "Rented Tag"
+                                else -> "Check-In Tag"
+                            },
                             statusCategory = statusCategory,
                             price = priceFormatted
                         )
@@ -382,19 +415,25 @@ fun BookingListScreen(
         if (isPreview && items.isEmpty()) {
             listOf(
                 BookingListItemData("Unit 12A", "Staycation Check-in", "$todayMonthShort $todayDayNum, $todayYear", "2:00 PM", "Agent", "Check-In Tag", "Check-in", "₱2,500"),
-                BookingListItemData("Unit 15B", "Staycation Reservation", "$todayMonthShort $todayDayNum, $todayYear", "2:00 PM", "Agent", "Reserved Tag", "Reserved", "₱2,500")
+                BookingListItemData("Unit 15B", "Staycation Reservation", "$todayMonthShort $todayDayNum, $todayYear", "2:00 PM", "Agent", "Reserved Tag", "Reserved", "")
             )
         } else {
             items.distinctBy { "${it.unitName}_${it.date}_${it.statusCategory}" }
         }
     }
 
-    val filteredItems = remember(allBookingItems, searchQuery, selectedFilter) {
+    val sessionManager = remember { UserSessionManager(context) }
+    val loggedAgentName = remember(sessionManager) { sessionManager.getUsername() }
+
+    val filteredItems = remember(allBookingItems, searchQuery, selectedFilter, isOwnerMode, loggedAgentName) {
         allBookingItems.filter { item ->
+            val matchesAgentOwnership = isOwnerMode || isPreview || UserSessionManager.isSameCreator(item.agent, loggedAgentName)
+
             val matchesFilter = when (selectedFilter) {
                 "All" -> true
                 "Check-in", "Checked-In" -> item.statusCategory == "Check-in"
                 "Reserved" -> item.statusCategory == "Reserved"
+                "Rented" -> item.statusCategory == "Rented"
                 else -> true
             }
 
@@ -406,7 +445,7 @@ fun BookingListScreen(
                     item.date.lowercase().contains(query) ||
                     item.status.lowercase().contains(query)
 
-            matchesFilter && matchesSearch
+            matchesAgentOwnership && matchesFilter && matchesSearch
         }
     }
 
@@ -1121,6 +1160,11 @@ private fun HomeDashboardContent(
             val isExpired = FirebaseCloudSyncManager.isEventDateExpired(evtDate, evtTime)
 
             monthMatches && yearMatches && !isExpired && !isAvailableShape && isDateCoveredByEvent(evtDate, todayNum, todayShortMonth, todayYear)
+        }.distinctBy { evt ->
+            val cleanU = (evt["unit"] ?: "").replace("Unit", "", ignoreCase = true).trim().lowercase()
+            val cleanShape = (evt["shape"] ?: "").trim().lowercase()
+            val cleanDate = (evt["date"] ?: "").trim().lowercase()
+            "${cleanU}_${cleanDate}_${cleanShape}"
         }
 
         if (todayActiveBookings.isEmpty()) {
@@ -1200,15 +1244,17 @@ private fun CalendarTabContent(
         "$activeMonthName $activeYearNumber"
     }
 
-    val dbEventsState = remember { mutableStateOf<List<Map<String, String>>>(emptyList()) }
-    val dbUnitsState = remember { mutableStateOf<List<Map<String, Any>>>(emptyList()) }
+    val syncVersion = FirebaseCloudSyncManager.globalCloudSyncTrigger.intValue
 
-    LaunchedEffect(currentSubScreen, refreshTrigger, activeMonthName, activeYearNumber, FirebaseCloudSyncManager.globalCloudSyncTrigger.intValue) {
+    val dbEventsState = remember(syncVersion) { mutableStateOf(if (isPreview) emptyList() else dbHelper.getAllEvents()) }
+    val dbUnitsState = remember(syncVersion) { mutableStateOf(if (isPreview) emptyList() else dbHelper.getAllUnits()) }
+
+    LaunchedEffect(currentSubScreen, refreshTrigger, activeMonthName, activeYearNumber, syncVersion) {
         dbEventsState.value = dbHelper.getAllEvents()
         dbUnitsState.value = dbHelper.getAllUnits()
     }
 
-    val calendarDays = remember(activeMonthName, activeYearNumber, currentSubScreen, isPreview, refreshTrigger, dbEventsState.value) {
+    val calendarDays = remember(activeMonthName, activeYearNumber, currentSubScreen, isPreview, refreshTrigger, dbEventsState.value, syncVersion) {
         val baseDays = createSampleCalendarMonth(activeMonthName, activeYearNumber, agentName)
         if (isPreview) {
             baseDays

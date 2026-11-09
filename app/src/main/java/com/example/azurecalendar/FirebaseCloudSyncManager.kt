@@ -20,7 +20,25 @@ object FirebaseCloudSyncManager {
 
     private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
 
+    private val webSocketManager = AppWebSocketManager { incomingMsg ->
+        Log.d("CloudSync", "WebSocket incoming broadcast: $incomingMsg")
+        notifyCloudUpdate()
+    }
+
+    fun initWebSocketConnection() {
+        try {
+            webSocketManager.connect("wss://echo.websocket.events")
+        } catch (e: Exception) {
+            Log.e(TAG, "WebSocket connection init error: ${e.message}")
+        }
+    }
+
+    fun broadcastWebSocketSync(payload: String) {
+        webSocketManager.broadcastUpdate(payload)
+    }
+
     fun notifyCloudUpdate() {
+        broadcastWebSocketSync("{\"type\":\"SYNC\", \"timestamp\":${System.currentTimeMillis()}}")
         if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) {
             globalCloudSyncTrigger.intValue++
         } else {
@@ -292,10 +310,17 @@ object FirebaseCloudSyncManager {
         if (isNetworkCallbackRegistered) return
         try {
             val connectivityManager = context.applicationContext.getSystemService(Context.CONNECTIVITY_SERVICE) as? android.net.ConnectivityManager
-            if (connectivityManager != null && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N) {
-                connectivityManager.registerDefaultNetworkCallback(object : android.net.ConnectivityManager.NetworkCallback() {
+            if (connectivityManager != null) {
+                val request = android.net.NetworkRequest.Builder()
+                    .addCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                    .addTransportType(android.net.NetworkCapabilities.TRANSPORT_WIFI)
+                    .addTransportType(android.net.NetworkCapabilities.TRANSPORT_CELLULAR)
+                    .addTransportType(android.net.NetworkCapabilities.TRANSPORT_ETHERNET)
+                    .build()
+
+                connectivityManager.registerNetworkCallback(request, object : android.net.ConnectivityManager.NetworkCallback() {
                     override fun onAvailable(network: android.net.Network) {
-                        Log.d(TAG, "Network interface connected (Wi-Fi or Mobile Data). Re-enforcing Firestore network connection!")
+                        Log.d(TAG, "Network connected (USB Wire / Wi-Fi / Mobile Data). Re-enforcing Cloud Firestore network!")
                         try {
                             val db = FirebaseFirestore.getInstance()
                             db.enableNetwork().addOnSuccessListener {
@@ -305,7 +330,7 @@ object FirebaseCloudSyncManager {
                     }
 
                     override fun onLost(network: android.net.Network) {
-                        Log.d(TAG, "Network interface lost.")
+                        Log.d(TAG, "Network disconnected.")
                     }
                 })
                 isNetworkCallbackRegistered = true
@@ -482,24 +507,19 @@ object FirebaseCloudSyncManager {
                     "updatedAt" to System.currentTimeMillis()
                 )
 
-                // Atomic writes to both 'units' and 'units_catalog' collections simultaneously to prevent race conditions
+                // Atomic writes to both 'units' and 'units_catalog' collections (1 write each to minimize quota consumption)
                 val batch = db.batch()
                 batch.set(db.collection("units").document(cleanUnit), unitData, SetOptions.merge())
-                batch.set(db.collection("units").document(cleanUnit.uppercase()), unitData, SetOptions.merge())
-                batch.set(db.collection("units").document(normalizedUnit), unitData, SetOptions.merge())
-
                 batch.set(db.collection("units_catalog").document(cleanUnit), unitData, SetOptions.merge())
-                batch.set(db.collection("units_catalog").document(cleanUnit.uppercase()), unitData, SetOptions.merge())
-                batch.set(db.collection("units_catalog").document(normalizedUnit), unitData, SetOptions.merge())
 
-            batch.commit()
-                .addOnSuccessListener {
-                    Log.d(TAG, "Unit $normalizedUnit status -> $status synced to cloud!")
-                    notifyCloudUpdate()
-                }
-                .addOnFailureListener { e ->
-                    Log.e(TAG, "Firestore unit status write failed: ${e.message}")
-                }
+                batch.commit()
+                    .addOnSuccessListener {
+                        Log.d(TAG, "Unit $normalizedUnit status -> $status synced to cloud!")
+                        notifyCloudUpdate()
+                    }
+                    .addOnFailureListener { e ->
+                        Log.e(TAG, "Firestore unit status write failed: ${e.message}")
+                    }
             } catch (e: Exception) {
                 Log.e(TAG, "Unit status cloud sync error: ${e.message}")
             }
@@ -662,64 +682,68 @@ object FirebaseCloudSyncManager {
     }
 
     fun pushAgentToCloud(name: String, email: String, phone: String, role: String, gender: String) {
-        try {
-            val db = FirebaseFirestore.getInstance()
-            val agentData = mapOf(
-                "name" to name,
-                "email" to email,
-                "phone" to phone,
-                "role" to role,
-                "gender" to gender,
-                "updatedAt" to System.currentTimeMillis()
-            )
-            val docKey = sanitizeDocId(email.ifBlank { name }.lowercase())
-            db.collection("agents").document(docKey)
-                .set(agentData, SetOptions.merge())
-                .addOnSuccessListener {
-                    Log.d(TAG, "Agent $name ($email) synced to Cloud Firestore!")
-                    notifyCloudUpdate()
-                }
-                .addOnFailureListener { e ->
-                    Log.e(TAG, "Agent cloud push failed: ${e.message}")
-                }
-        } catch (e: Exception) {
-            Log.e(TAG, "Agent push error: ${e.message}")
+        ensureAuthBeforeCloudAction {
+            try {
+                val db = FirebaseFirestore.getInstance()
+                val agentData = mapOf(
+                    "name" to name,
+                    "email" to email,
+                    "phone" to phone,
+                    "role" to role,
+                    "gender" to gender,
+                    "updatedAt" to System.currentTimeMillis()
+                )
+                val docKey = sanitizeDocId(email.ifBlank { name }.lowercase())
+                db.collection("agents").document(docKey)
+                    .set(agentData, SetOptions.merge())
+                    .addOnSuccessListener {
+                        Log.d(TAG, "Agent $name ($email) synced to Cloud Firestore!")
+                        notifyCloudUpdate()
+                    }
+                    .addOnFailureListener { e ->
+                        Log.e(TAG, "Agent cloud push failed: ${e.message}")
+                    }
+            } catch (e: Exception) {
+                Log.e(TAG, "Agent push error: ${e.message}")
+            }
         }
     }
 
     fun deleteAgentFromCloud(name: String = "", email: String = "") {
-        try {
-            val db = FirebaseFirestore.getInstance()
-            val cleanEmail = email.trim().lowercase()
-            val cleanName = name.trim().lowercase()
-            if (cleanEmail.isBlank() && cleanName.isBlank()) return
+        ensureAuthBeforeCloudAction {
+            try {
+                val db = FirebaseFirestore.getInstance()
+                val cleanEmail = email.trim().lowercase()
+                val cleanName = name.trim().lowercase()
+                if (cleanEmail.isBlank() && cleanName.isBlank()) return@ensureAuthBeforeCloudAction
 
-            db.collection("agents").get().addOnSuccessListener { query ->
-                for (doc in query.documents) {
-                    val docEmail = doc.getString("email")?.trim()?.lowercase() ?: ""
-                    val docName = doc.getString("name")?.trim()?.lowercase() ?: ""
-                    if ((cleanEmail.isNotBlank() && docEmail == cleanEmail) ||
-                        (cleanName.isNotBlank() && docName == cleanName) ||
-                        doc.id.equals(cleanEmail, ignoreCase = true)
-                    ) {
-                        doc.reference.delete()
+                db.collection("agents").get().addOnSuccessListener { query ->
+                    for (doc in query.documents) {
+                        val docEmail = doc.getString("email")?.trim()?.lowercase() ?: ""
+                        val docName = doc.getString("name")?.trim()?.lowercase() ?: ""
+                        if ((cleanEmail.isNotBlank() && docEmail == cleanEmail) ||
+                            (cleanName.isNotBlank() && docName == cleanName) ||
+                            doc.id.equals(cleanEmail, ignoreCase = true)
+                        ) {
+                            doc.reference.delete()
+                        }
                     }
-                }
-                notifyCloudUpdate()
-            }
-
-            val docId = if (cleanEmail.isNotBlank()) cleanEmail else cleanName
-            val delData = mapOf(
-                "name" to name,
-                "email" to email,
-                "deletedAt" to System.currentTimeMillis()
-            )
-            db.collection("deleted_agents").document(docId).set(delData)
-                .addOnSuccessListener {
                     notifyCloudUpdate()
                 }
-        } catch (e: Exception) {
-            Log.e(TAG, "Delete agent cloud error: ${e.message}")
+
+                val docId = if (cleanEmail.isNotBlank()) cleanEmail else cleanName
+                val delData = mapOf(
+                    "name" to name,
+                    "email" to email,
+                    "deletedAt" to System.currentTimeMillis()
+                )
+                db.collection("deleted_agents").document(docId).set(delData)
+                    .addOnSuccessListener {
+                        notifyCloudUpdate()
+                    }
+            } catch (e: Exception) {
+                Log.e(TAG, "Delete agent cloud error: ${e.message}")
+            }
         }
     }
 
@@ -732,6 +756,7 @@ object FirebaseCloudSyncManager {
         }
         stopCloudListener()
         isListenerActive = true
+        initWebSocketConnection()
 
         ensureAuthBeforeCloudAction {
             try {
@@ -749,18 +774,6 @@ object FirebaseCloudSyncManager {
                     db.enableNetwork()
                 } catch (_: Exception) {}
 
-                val authUser = com.google.firebase.auth.FirebaseAuth.getInstance().currentUser
-                val userLabel = authUser?.email ?: authUser?.uid ?: "Anonymous"
-
-                db.collection("_connection_test").document("test_probe")
-                    .set(mapOf("timestamp" to System.currentTimeMillis(), "user" to userLabel))
-                    .addOnSuccessListener {
-                        Log.d(TAG, "FIRESTORE SYNC CONNECTED OK! User: $userLabel")
-                    }
-                    .addOnFailureListener { err: Exception ->
-                        Log.e(TAG, "FIRESTORE CONNECTION BLOCKED: ${err.message}")
-                    }
-
             // 1. Real-Time Events Listener
             eventsListener?.remove()
             eventsListener = db.collection("events")
@@ -772,45 +785,33 @@ object FirebaseCloudSyncManager {
                     }
                     try {
                         for (change in snapshots.documentChanges) {
+                            val doc = change.document
+                            val docId = doc.id
+                            val title = doc.getString("title") ?: "Booking"
+                            val date = doc.getString("date") ?: ""
+                            val time = doc.getString("time") ?: "2:00 PM"
+                            val agent = doc.getString("agent") ?: doc.getString("targetAgent") ?: "Agent"
+                            val rawUnit = doc.getString("unit") ?: "Event"
+                            val cleanUnit = rawUnit.replace("Unit", "", ignoreCase = true).trim()
+                            val shape = doc.getString("shape") ?: "Available"
+                            val isGeneralEvent = cleanUnit.equals("Event", ignoreCase = true) || cleanUnit.contains("Meeting", ignoreCase = true) || shape.contains("Owner Event", ignoreCase = true)
+                            val finalUnit = if (isGeneralEvent) "Event" else "Unit $cleanUnit"
+
+                            val rawColor = doc.get("color")
+                            val colorLong = when (rawColor) {
+                                is Number -> rawColor.toLong()
+                                is String -> rawColor.toLongOrNull() ?: 0L
+                                else -> 0L
+                            }
+
                             if (change.type == DocumentChange.Type.REMOVED) {
-                                val removedId = change.document.id
-                                val removedDate = change.document.getString("date") ?: ""
-                                val removedUnit = change.document.getString("unit") ?: ""
-                                if (removedId.isNotBlank()) {
-                                    dbHelper.deleteEventByIdOrTitle(removedId)
+                                if (docId.isNotBlank()) {
+                                    dbHelper.deleteEventByIdOrTitle(docId)
                                 }
-                                if (removedDate.isNotBlank() && removedUnit.isNotBlank()) {
-                                    dbHelper.deleteEventByDateAndUnit(removedDate, removedUnit, syncToCloud = false)
+                                if (date.isNotBlank() && finalUnit.isNotBlank()) {
+                                    dbHelper.deleteEventByDateAndUnit(date, finalUnit, syncToCloud = false)
                                 }
-                            }
-                        }
-
-                        if (snapshots.documents.isEmpty()) {
-                            val localCheck = dbHelper.getAllEvents()
-                            if (localCheck.isNotEmpty()) {
-                                syncAllLocalEventsToCloud(appContext)
-                            }
-                        } else {
-                            dbHelper.clearAllEvents()
-                            for (doc in snapshots.documents) {
-                                val docId = doc.id
-                                val title = doc.getString("title") ?: "Booking"
-                                val date = doc.getString("date") ?: ""
-                                val time = doc.getString("time") ?: "2:00 PM"
-                                val agent = doc.getString("agent") ?: doc.getString("targetAgent") ?: "Agent"
-                                val rawUnit = doc.getString("unit") ?: "Event"
-                                val cleanUnit = rawUnit.replace("Unit", "", ignoreCase = true).trim()
-                                val shape = doc.getString("shape") ?: "Available"
-                                val isGeneralEvent = cleanUnit.equals("Event", ignoreCase = true) || cleanUnit.contains("Meeting", ignoreCase = true) || shape.contains("Owner Event", ignoreCase = true)
-                                val finalUnit = if (isGeneralEvent) "Event" else "Unit $cleanUnit"
-
-                                val rawColor = doc.get("color")
-                                val colorLong = when (rawColor) {
-                                    is Number -> rawColor.toLong()
-                                    is String -> rawColor.toLongOrNull() ?: 0L
-                                    else -> 0L
-                                }
-
+                            } else { // ADDED or MODIFIED
                                 if ((cleanUnit.isNotBlank() || isGeneralEvent) && date.isNotBlank()) {
                                     dbHelper.insertEventRaw(
                                         docId = docId,
@@ -1368,9 +1369,11 @@ object FirebaseCloudSyncManager {
         return db.collection("event_chats")
             .document(cleanEventRoomId)
             .collection("messages")
-            .orderBy("createdTime", Query.Direction.ASCENDING)
             .addSnapshotListener { snapshot, e ->
-                if (e != null || snapshot == null) return@addSnapshotListener
+                if (e != null || snapshot == null) {
+                    Log.e(TAG, "Event chat listener error: ${e?.message}")
+                    return@addSnapshotListener
+                }
 
                 val resultList = mutableListOf<GroupChatMessage>()
                 for (doc in snapshot.documents) {
@@ -1409,7 +1412,9 @@ object FirebaseCloudSyncManager {
                         )
                     }
                 }
-                onMessagesUpdated(resultList)
+                val sorted = resultList.sortedBy { if (it.createdTime > 0L) it.createdTime else it.id.replace(Regex("[^0-9]"), "").toLongOrNull() ?: 0L }
+                onMessagesUpdated(sorted)
+                notifyCloudUpdate()
             }
     }
 

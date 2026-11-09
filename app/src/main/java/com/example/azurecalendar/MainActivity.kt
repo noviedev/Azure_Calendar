@@ -76,9 +76,6 @@ class MainActivity : FragmentActivity() {
             var currentScreen by rememberSaveable { mutableStateOf(initialScreen) }
             var registeredAgentName by rememberSaveable { mutableStateOf(initialUsername) }
 
-            // Global trigger state so Compose UI updates instantly on every cloud snapshot change
-            val syncVersion = FirebaseCloudSyncManager.globalCloudSyncTrigger.intValue
-
             BackHandler(enabled = currentScreen != "landing" && currentScreen != "welcome" && currentScreen != "agent_dashboard") {
                 currentScreen = when (currentScreen) {
                     "login", "register" -> "welcome"
@@ -99,6 +96,7 @@ class MainActivity : FragmentActivity() {
                         FirebaseFirestore.getInstance().enableNetwork()
                     } catch (_: Exception) {}
 
+                    FirebaseCloudSyncManager.initWebSocketConnection()
                     FirebaseCloudSyncManager.startRealtimeCloudListener(context, forceRestart = true)
                 }
 
@@ -123,7 +121,7 @@ class MainActivity : FragmentActivity() {
             }
 
             // 2. Sync catalog & restart listener whenever switching screens (and enforce agent deletion revocation)
-            LaunchedEffect(currentScreen, syncVersion) {
+            LaunchedEffect(currentScreen) {
                 val deletedPrefs = context.getSharedPreferences("azure_calendar_deleted_agents", Context.MODE_PRIVATE)
                 val deletedSet = deletedPrefs.getStringSet("deleted_agent_keys", emptySet()).orEmpty()
                 val loggedUser = sessionManager.getUsername().trim().lowercase()

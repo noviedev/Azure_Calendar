@@ -26,6 +26,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalInspectionMode
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
@@ -275,16 +276,19 @@ private fun OwnerCalendarTabContent(
         "$activeMonthName $activeYearNumber"
     }
 
-    val dbEventsState = remember { mutableStateOf<List<Map<String, String>>>(emptyList()) }
-    val dbUnitsState = remember { mutableStateOf<List<Map<String, Any>>>(emptyList()) }
+    val isPreview = LocalInspectionMode.current
+    val syncVersion = FirebaseCloudSyncManager.globalCloudSyncTrigger.intValue
 
-    LaunchedEffect(currentSubScreen, refreshTrigger, activeMonthName, activeYearNumber, FirebaseCloudSyncManager.globalCloudSyncTrigger.intValue) {
+    val dbEventsState = remember(syncVersion) { mutableStateOf(if (isPreview) emptyList() else dbHelper.getAllEvents()) }
+    val dbUnitsState = remember(syncVersion) { mutableStateOf(if (isPreview) emptyList() else dbHelper.getAllUnits()) }
+
+    LaunchedEffect(currentSubScreen, refreshTrigger, activeMonthName, activeYearNumber, syncVersion) {
         dbEventsState.value = dbHelper.getAllEvents()
         dbUnitsState.value = dbHelper.getAllUnits()
     }
 
     // Load events from SQLite database in real-time
-    val calendarDays = remember(activeMonthName, activeYearNumber, currentSubScreen, refreshTrigger, dbEventsState.value) {
+    val calendarDays = remember(activeMonthName, activeYearNumber, currentSubScreen, refreshTrigger, dbEventsState.value, syncVersion) {
         createSampleCalendarMonth(activeMonthName, activeYearNumber, "Admin").map { day ->
             val dbEvents = dbEventsState.value.filter { evt ->
                 val evtDate = evt["date"] ?: ""
