@@ -1043,20 +1043,45 @@ data class DayScheduleModel(
 )
 
 object AzureCalendarColors {
-    val CardBg = Color(0xFFFFFFFF)
-    val BorderPurple = Color(0xFFE0D0EC)
-    val TextMuted = Color(0xFF7B6287)
-    val TextDark = Color(0xFF2C1A36)
-    val ScreenBg = Color(0xFFFAF5FC)
+    var isDarkMode by mutableStateOf(false)
+    var currentThemeMode by mutableStateOf("light")
 
-    // mutableStateOf so screens redraw automatically when the theme color changes
+    val CardBg: Color get() = if (isDarkMode) Color(0xFF1E1B26) else Color(0xFFFFFFFF)
+    val BorderPurple: Color get() = if (isDarkMode) Color(0xFF3B2E4A) else Color(0xFFE0D0EC)
+    val TextMuted: Color get() = if (isDarkMode) Color(0xFFAFA0C2) else Color(0xFF7B6287)
+    val TextDark: Color get() = if (isDarkMode) Color(0xFFF3EDFD) else Color(0xFF2C1A36)
+    val ScreenBg: Color get() = if (isDarkMode) Color(0xFF130F19) else Color(0xFFFAF5FC)
+
     var PurplePrimary by mutableStateOf(Color(0xFF6A1B9A))
+
+    fun setAppThemeMode(context: android.content.Context, mode: String) {
+        currentThemeMode = mode
+        val prefs = context.getSharedPreferences("azure_calendar_theme_mode_prefs", android.content.Context.MODE_PRIVATE)
+        val isDark = when (mode) {
+            "dark" -> true
+            "light" -> false
+            else -> (context.resources.configuration.uiMode and android.content.res.Configuration.UI_MODE_NIGHT_MASK) == android.content.res.Configuration.UI_MODE_NIGHT_YES
+        }
+        prefs.edit().putString("theme_mode", mode).putBoolean("is_dark_mode", isDark).apply()
+        isDarkMode = isDark
+    }
+
+    fun initThemeMode(context: android.content.Context) {
+        val prefs = context.getSharedPreferences("azure_calendar_theme_mode_prefs", android.content.Context.MODE_PRIVATE)
+        val mode = prefs.getString("theme_mode", "light") ?: "light"
+        currentThemeMode = mode
+        val isDark = when (mode) {
+            "dark" -> true
+            "light" -> false
+            else -> (context.resources.configuration.uiMode and android.content.res.Configuration.UI_MODE_NIGHT_MASK) == android.content.res.Configuration.UI_MODE_NIGHT_YES
+        }
+        isDarkMode = isDark
+    }
 
     fun updateThemeColor(hex: String) {
         PurplePrimary = parseHexColor(hex) ?: Color(0xFF6A1B9A)
     }
 
-    // Accepts "0xFF6A1B9A", "#6A1B9A", "6A1B9A", "FF6A1B9A"
     fun parseHexColor(hex: String): Color? = try {
         val clean = hex.trim().removePrefix("#").removePrefix("0x").removePrefix("0X")
         val argb = when (clean.length) {
@@ -1064,7 +1089,7 @@ object AzureCalendarColors {
             8 -> clean.toLong(16)
             else -> return null
         }
-        Color(argb.toInt())   // Int = correct ARGB constructor
+        Color(argb.toInt())
     } catch (_: NumberFormatException) {
         null
     }

@@ -82,52 +82,90 @@ private fun InvoiceListScreen(
         val allEvents = dbHelper.getAllEvents()
         val allUnits = dbHelper.getAllUnits()
 
-        // Invoices are generated for Check-ins ("Paid") and Reservations ("Pending")
-        val financialEvents = allEvents.filter { evt ->
-            val shape = evt["shape"] ?: ""
-            val title = evt["title"] ?: ""
-            val combined = "$shape $title"
-            combined.contains("Check", ignoreCase = true) || combined.contains("Heart", ignoreCase = true) ||
-            combined.contains("Reserve", ignoreCase = true) || combined.contains("Diamond", ignoreCase = true)
-        }
+        val list = mutableListOf<InvoiceItem>()
 
-        if (financialEvents.isEmpty()) {
-            listOf(
-                InvoiceItem("INV-10025", "Unit 12A · Check-in", "Nov 5 - Nov 7, 2026", "₱2,500.00", "Paid", "Admin Owner"),
-                InvoiceItem("INV-10024", "Unit 15B · Reserve", "Nov 10 - Nov 12, 2026", "₱5,000.00", "Pending", "Cris Nar"),
-                InvoiceItem("INV-10023", "Unit 08C · Check-in", "Nov 1 - Nov 3, 2026", "₱3,200.00", "Paid", "Alex")
-            )
-        } else {
-            financialEvents.mapIndexed { idx, evt ->
-                val rawId = evt["id"] ?: "${idx + 1001}"
-                val invId = if (rawId.startsWith("INV")) rawId else "INV-$rawId"
-                val uNum = evt["unit"] ?: "Unit 12A"
-                val shape = evt["shape"] ?: "Booking"
-                val dateStr = evt["date"] ?: "Nov 5, 2026"
-                val agent = evt["agent"] ?: "Admin Owner"
+        // 1. Process calendar booking tag events (Check-in, Reserve, Rented)
+        allEvents.forEachIndexed { idx, evt ->
+            val rawId = evt["id"] ?: "${idx + 1001}"
+            val invId = if (rawId.startsWith("INV")) rawId else "INV-${rawId.replace(Regex("[^0-9]"), "").takeLast(4).ifBlank { "${idx + 3740}" }}"
+            val uNum = evt["unit"] ?: "Unit 12A"
+            val rawShape = evt["shape"] ?: evt["title"] ?: "Booking"
+            val dateStr = evt["date"] ?: "Nov 12, 2026"
+            val agent = evt["agent"] ?: "Admin Owner"
 
+            val shapeClean = when {
+                rawShape.contains("Check", ignoreCase = true) || rawShape.contains("Heart", ignoreCase = true) -> "Check-in"
+                rawShape.contains("Reserve", ignoreCase = true) || rawShape.contains("Diamond", ignoreCase = true) -> "Reserve"
+                rawShape.contains("Rent", ignoreCase = true) || rawShape.contains("Star", ignoreCase = true) || rawShape.contains("Not", ignoreCase = true) -> "Rented"
+                else -> null
+            }
+
+            if (shapeClean != null) {
                 val matchedUnitMap = allUnits.find { (it["unitNumber"]?.toString() ?: "").contains(uNum, ignoreCase = true) }
                 val rate = (matchedUnitMap?.get("rate") as? Double) ?: 2500.0
                 val (calcAmount, _) = EmailTemplateHelper.calculateBookingPrice(dateStr, rate)
-                val formattedAmount = "₱" + String.format("%,.2f", calcAmount)
+                val finalCalc = if (shapeClean == "Rented" && calcAmount < rate * 5) rate * 7 else calcAmount
+                val formattedAmount = "₱" + String.format("%,.2f", finalCalc)
 
-                val invStatus = if (shape.contains("Reserve", ignoreCase = true) || shape.contains("Diamond", ignoreCase = true)) {
-                    "Pending"
-                } else {
-                    "Paid"
-                }
+                val invStatus = if (shapeClean == "Reserve") "Pending" else "Paid"
 
-                InvoiceItem(
-                    id = invId,
-                    unitAndType = "$uNum · $shape",
-                    date = dateStr,
-                    amount = formattedAmount,
-                    status = invStatus,
-                    agentName = agent,
-                    guestName = evt["guest"] ?: "Guest User",
-                    paymentMethod = if (invStatus == "Pending") "Pending / Pay on Arrival" else "GCash / Bank Transfer"
+                list.add(
+                    InvoiceItem(
+                        id = invId,
+                        unitAndType = "$uNum · $shapeClean",
+                        date = dateStr,
+                        amount = formattedAmount,
+                        status = invStatus,
+                        agentName = agent,
+                        guestName = evt["guest"] ?: "Staycation Lessee",
+                        paymentMethod = if (invStatus == "Pending") "Pending / Pay on Arrival" else "GCash / Bank Transfer"
+                    )
                 )
             }
+        }
+
+        // 2. Add master Rented units if not already present
+        val deletedPrefs = context.getSharedPreferences("azure_calendar_deleted_units", Context.MODE_PRIVATE)
+        val deletedSet = deletedPrefs.getStringSet("deleted_unit_numbers", emptySet()).orEmpty()
+
+        allUnits.filter { unitMap ->
+            val uNum = unitMap["unitNumber"]?.toString() ?: ""
+            val status = unitMap["status"]?.toString() ?: ""
+            deletedSet.none { isSameUnit(it, uNum) } &&
+                    (status.contains("Rent", ignoreCase = true) || status.contains("Not", ignoreCase = true))
+        }.forEachIndexed { idx, unitMap ->
+            val uNum = unitMap["unitNumber"]?.toString() ?: "Unit 1221"
+            val rate = (unitMap["rate"] as? Double) ?: 2500.0
+            val monthlyRent = if (rate >= 10000.0) rate else rate * 7.0
+            val formattedAmount = "₱" + String.format("%,.2f", monthlyRent)
+
+            val alreadyInList = list.any { it.unitAndType.contains(uNum, ignoreCase = true) && it.unitAndType.contains("Rented", ignoreCase = true) }
+            if (!alreadyInList) {
+                list.add(
+                    InvoiceItem(
+                        id = "INV-${3750 + idx}",
+                        unitAndType = "$uNum · Rented",
+                        date = "Nov 12 - Nov 19, 2026",
+                        amount = formattedAmount,
+                        status = "Paid",
+                        agentName = "Admin Owner",
+                        guestName = "Long Term Lessee",
+                        paymentMethod = "GCash / Bank Transfer"
+                    )
+                )
+            }
+        }
+
+        if (list.isEmpty()) {
+            listOf(
+                InvoiceItem("INV-3749", "Unit G24 · Reserve", "Nov 13 - 16, 2026", "₱10,500.00", "Pending", "Novelene Udtohan"),
+                InvoiceItem("INV-3748", "Unit 15B · Reserve", "Nov 26 - 28, 2026", "₱7,300.00", "Pending", "Chione Udtohan"),
+                InvoiceItem("INV-3747", "Unit 1521 · Check-in", "Nov 11 - 17, 2026", "₱18,000.00", "Paid", "Chione Udtohan"),
+                InvoiceItem("INV-3746", "Unit 1221 · Rented", "Nov 12 - Nov 19, 2026", "₱17,500.00", "Paid", "Chione Udtohan"),
+                InvoiceItem("INV-3745", "Unit 08C · Check-in", "Nov 12 - 13, 2026", "₱2,500.00", "Paid", "Chione Udtohan")
+            )
+        } else {
+            list.distinctBy { it.id }.sortedByDescending { it.id }
         }
     }
 

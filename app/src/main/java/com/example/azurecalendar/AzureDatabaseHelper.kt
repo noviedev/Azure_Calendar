@@ -138,8 +138,22 @@ class AzureDatabaseHelper(context: Context) : SQLiteOpenHelper(context.applicati
         if (rawUri.startsWith("data:image", ignoreCase = true)) {
             return try {
                 val base64Part = rawUri.substringAfter("base64,", "")
-                if (base64Part.isBlank()) return ""
-                val bytes = android.util.Base64.decode(base64Part, android.util.Base64.DEFAULT)
+                    .replace(" ", "")
+                    .replace("\n", "")
+                    .replace("\r", "")
+                    .trim()
+                if (base64Part.isBlank()) return rawUri
+
+                val bytes = try {
+                    android.util.Base64.decode(base64Part, android.util.Base64.DEFAULT)
+                } catch (_: Exception) {
+                    try {
+                        android.util.Base64.decode(base64Part, android.util.Base64.NO_WRAP or android.util.Base64.URL_SAFE)
+                    } catch (_: Exception) {
+                        return rawUri
+                    }
+                }
+
                 val dir = File(appContext.filesDir, "synced_unit_images")
                 if (!dir.exists()) dir.mkdirs()
 
@@ -153,7 +167,7 @@ class AzureDatabaseHelper(context: Context) : SQLiteOpenHelper(context.applicati
                 }
                 Uri.fromFile(outFile).toString()
             } catch (_: Exception) {
-                ""
+                rawUri
             }
         }
 
@@ -531,9 +545,24 @@ class AzureDatabaseHelper(context: Context) : SQLiteOpenHelper(context.applicati
         createdTime: Long = System.currentTimeMillis()
     ): Long {
         val db = this.writableDatabase
+        var existingRoomId = ""
+        try {
+            val cursor = db.rawQuery("SELECT $COLUMN_CHAT_ROOM_ID FROM $TABLE_CHAT_MESSAGES WHERE $COLUMN_CHAT_ID = ?", arrayOf(msgId))
+            if (cursor.moveToFirst()) {
+                existingRoomId = cursor.getString(0) ?: ""
+            }
+            cursor.close()
+        } catch (_: Exception) {}
+
+        val finalRoomId = if (existingRoomId.isNotBlank() && existingRoomId.startsWith("chat_") && !roomId.startsWith("chat_")) {
+            existingRoomId
+        } else {
+            roomId
+        }
+
         val values = ContentValues().apply {
             put(COLUMN_CHAT_ID, msgId)
-            put(COLUMN_CHAT_ROOM_ID, roomId)
+            put(COLUMN_CHAT_ROOM_ID, finalRoomId)
             put(COLUMN_CHAT_SENDER_NAME, senderName)
             put(COLUMN_CHAT_SENDER_ROLE, senderRole)
             put(COLUMN_CHAT_TEXT, text)
@@ -547,7 +576,11 @@ class AzureDatabaseHelper(context: Context) : SQLiteOpenHelper(context.applicati
         val list = mutableListOf<GroupChatMessage>()
         try {
             val db = this.readableDatabase
-            val cursor = db.rawQuery("SELECT * FROM $TABLE_CHAT_MESSAGES WHERE $COLUMN_CHAT_ROOM_ID = ? ORDER BY $COLUMN_CHAT_CREATED_TIME ASC", arrayOf(roomId))
+            val cleanKey = roomId.replace("chat_", "", ignoreCase = true).trim().lowercase()
+            val cursor = db.rawQuery(
+                "SELECT * FROM $TABLE_CHAT_MESSAGES WHERE $COLUMN_CHAT_ROOM_ID = ? OR $COLUMN_CHAT_ROOM_ID LIKE ? OR $COLUMN_CHAT_ROOM_ID LIKE ? ORDER BY $COLUMN_CHAT_CREATED_TIME ASC",
+                arrayOf(roomId, "%$cleanKey%", "%$roomId%")
+            )
             if (cursor.moveToFirst()) {
                 do {
                     val id = cursor.getString(cursor.getColumnIndexOrThrow(COLUMN_CHAT_ID))
@@ -571,7 +604,7 @@ class AzureDatabaseHelper(context: Context) : SQLiteOpenHelper(context.applicati
             }
             cursor.close()
         } catch (_: Exception) {}
-        return list
+        return list.distinctBy { if (it.id.isNotBlank()) it.id else "${it.senderName}_${it.messageText}_${it.createdTime}" }
     }
 
     // --- Units CRUD ---
@@ -602,7 +635,7 @@ class AzureDatabaseHelper(context: Context) : SQLiteOpenHelper(context.applicati
         cursor.close()
 
         val rawFinalImage = imageUri.ifBlank { existingImageUri }
-        val finalImageUri = persistLocalImageIfNeeded(cleanUnit, rawFinalImage)
+        val finalImageUri = if (rawFinalImage.isNotBlank()) rawFinalImage else ""
 
         val finalStatus = if (!syncToCloud && status == "Available" && existingStatus.isNotBlank() && existingStatus != "Available") {
             existingStatus
@@ -652,25 +685,46 @@ class AzureDatabaseHelper(context: Context) : SQLiteOpenHelper(context.applicati
         val cleanUnit = unitNumber.replace("Unit", "", ignoreCase = true).trim()
         val normalizedUnit = "Unit $cleanUnit"
 
+        var existingTower = "Azure Tower"
+        var existingOwner = "Admin Owner"
+        var existingRate = 2500.0
+        var existingImage = ""
+        var existingDesc = "1 Bedroom"
+
+        try {
+            val cursor = db.rawQuery(
+                "SELECT $COLUMN_TOWER, $COLUMN_OWNER, $COLUMN_RATE, $COLUMN_IMAGE, $COLUMN_DESCRIPTION FROM $TABLE_UNITS WHERE $COLUMN_UNIT_NUMBER = ? OR $COLUMN_UNIT_NUMBER = ? OR $COLUMN_UNIT_NUMBER = ?",
+                arrayOf(normalizedUnit, unitNumber, cleanUnit)
+            )
+            if (cursor.moveToFirst()) {
+                existingTower = cursor.getString(0) ?: "Azure Tower"
+                existingOwner = cursor.getString(1) ?: "Admin Owner"
+                existingRate = cursor.getDouble(2)
+                existingImage = cursor.getString(3) ?: ""
+                existingDesc = cursor.getString(4) ?: "1 Bedroom"
+            }
+            cursor.close()
+        } catch (_: Exception) {}
+
         val values = ContentValues().apply {
             put(COLUMN_STATUS, status)
         }
         val rows = db.update(
             TABLE_UNITS,
             values,
-            "$COLUMN_UNIT_NUMBER = ? OR $COLUMN_UNIT_NUMBER = ? OR $COLUMN_UNIT_NUMBER LIKE ?",
-            arrayOf(unitNumber, normalizedUnit, "%$cleanUnit%")
+            "$COLUMN_UNIT_NUMBER = ? OR $COLUMN_UNIT_NUMBER = ? OR $COLUMN_UNIT_NUMBER = ?",
+            arrayOf(normalizedUnit, unitNumber, cleanUnit)
         )
 
         if (rows <= 0) {
             insertUnit(
                 unitNumber = normalizedUnit,
-                tower = "Azure Tower",
+                tower = existingTower,
                 status = status,
-                owner = "Admin Owner",
-                rate = 2500.0,
-                imageUri = "",
-                description = "1 Bedroom",
+                owner = existingOwner,
+                rate = existingRate,
+                imageUri = existingImage,
+                description = existingDesc,
                 syncToCloud = syncToCloud
             )
         } else if (syncToCloud && cleanUnit.isNotBlank() && cleanUnit != "TEMP_UNIT") {
@@ -703,17 +757,7 @@ class AzureDatabaseHelper(context: Context) : SQLiteOpenHelper(context.applicati
                 val descIdx = cursor.getColumnIndex(COLUMN_DESCRIPTION)
 
                 val uNum = if (numIdx != -1) cursor.getString(numIdx) ?: "" else ""
-                val rawImg = if (imgIdx != -1) cursor.getString(imgIdx) ?: "" else ""
-
-                val cleanImg = if (rawImg.startsWith("data:image", ignoreCase = true)) {
-                    val cleanNum = uNum.replace("Unit", "", ignoreCase = true).trim()
-                    val fixedUri = persistLocalImageIfNeeded(cleanNum, rawImg)
-                    val cv = ContentValues().apply { put(COLUMN_IMAGE, fixedUri) }
-                    db.update(TABLE_UNITS, cv, "$COLUMN_UNIT_NUMBER = ?", arrayOf(uNum))
-                    fixedUri
-                } else {
-                    rawImg
-                }
+                val cleanImg = if (imgIdx != -1) cursor.getString(imgIdx) ?: "" else ""
 
                 val unit = mapOf(
                     "unitNumber" to uNum,

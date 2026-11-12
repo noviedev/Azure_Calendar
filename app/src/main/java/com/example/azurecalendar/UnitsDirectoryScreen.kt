@@ -1,12 +1,17 @@
 package com.example.azurecalendar
 
-import androidx.activity.compose.BackHandler
 import android.content.Context
+import android.graphics.BitmapFactory
 import android.net.Uri
+import android.util.Base64
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import coil.compose.AsyncImage
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalInspectionMode
+import androidx.compose.ui.res.painterResource
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -44,11 +49,11 @@ import com.example.azurecalendar.ui.theme.AzureCalendarTheme
 import java.io.File
 
 private val PurplePrimary get() = AzureCalendarColors.PurplePrimary
-private val ScreenBg = Color(0xFFFAF5FC)
-private val CardBg = Color(0xFFFFFFFF)
-private val TextDark = Color(0xFF2C1A36)
-private val TextMuted = Color(0xFF7B6287)
-private val BorderPurple = Color(0xFFE0D0EC)
+private val ScreenBg get() = AzureCalendarColors.ScreenBg
+private val CardBg get() = AzureCalendarColors.CardBg
+private val TextDark get() = AzureCalendarColors.TextDark
+private val TextMuted get() = AzureCalendarColors.TextMuted
+private val BorderPurple get() = AzureCalendarColors.BorderPurple
 
 fun parseMonthIndex(monthStr: String): Int {
     if (monthStr.isBlank()) return java.util.Calendar.getInstance().get(java.util.Calendar.MONTH)
@@ -65,12 +70,8 @@ fun parseMonthIndex(monthStr: String): Int {
 fun isDateCoveredByEvent(evtDate: String, dayNumber: Int, currentMonthName: String = "", currentYearNumber: Int = 0): Boolean {
     if (evtDate.isBlank()) return false
 
-    if (currentYearNumber > 2000) {
-        val evtYear = Regex("\\b20\\d{2}\\b").find(evtDate)?.value?.toIntOrNull()
-        if (evtYear != null && evtYear != currentYearNumber) {
-            return false
-        }
-    }
+    val realTimeCal = java.util.Calendar.getInstance()
+    val targetYear = if (currentYearNumber > 2000) currentYearNumber else realTimeCal.get(java.util.Calendar.YEAR)
 
     val monthMap = mapOf(
         "jan" to 1, "feb" to 2, "mar" to 3, "apr" to 4, "may" to 5, "jun" to 6,
@@ -80,8 +81,13 @@ fun isDateCoveredByEvent(evtDate: String, dayNumber: Int, currentMonthName: Stri
     )
 
     val activeMonthIdx = if (currentMonthName.isNotBlank()) {
-        monthMap.entries.find { currentMonthName.contains(it.key, ignoreCase = true) }?.value ?: 0
-    } else 0
+        monthMap.entries.find { currentMonthName.contains(it.key, ignoreCase = true) }?.value ?: (realTimeCal.get(java.util.Calendar.MONTH) + 1)
+    } else (realTimeCal.get(java.util.Calendar.MONTH) + 1)
+
+    val evtYear = Regex("\\b20\\d{2}\\b").find(evtDate)?.value?.toIntOrNull()
+    if (evtYear != null && evtYear != targetYear) {
+        return false
+    }
 
     if (evtDate.contains("-") || evtDate.contains("to", ignoreCase = true)) {
         val parts = evtDate.split("-", "to", ignoreCase = true)
@@ -92,38 +98,42 @@ fun isDateCoveredByEvent(evtDate: String, dayNumber: Int, currentMonthName: Stri
             val startNum = Regex("\\b([1-9]|[12][0-9]|3[01])\\b").find(part1)?.value?.toIntOrNull()
             val endNum = Regex("\\b([1-9]|[12][0-9]|3[01])\\b").find(part2)?.value?.toIntOrNull()
 
-            val startMonth = monthMap.entries.find { part1.contains(it.key, ignoreCase = true) }?.value
+            val startMonth = monthMap.entries.find { part1.contains(it.key, ignoreCase = true) }?.value ?: activeMonthIdx
             val endMonth = monthMap.entries.find { part2.contains(it.key, ignoreCase = true) }?.value ?: startMonth
 
-            if (startNum != null && endNum != null && startMonth != null && endMonth != null) {
-                if (activeMonthIdx != 0) {
-                    if (startMonth == endMonth) {
-                        if (activeMonthIdx != startMonth) return false
+            if (startNum != null && endNum != null) {
+                if (startMonth == endMonth) {
+                    if (activeMonthIdx == startMonth) {
                         return dayNumber in minOf(startNum, endNum)..maxOf(startNum, endNum)
-                    } else {
-                        return when (activeMonthIdx) {
-                            startMonth -> dayNumber >= startNum
-                            endMonth -> dayNumber <= endNum
-                            in (startMonth + 1) until endMonth -> true
-                            else -> false
-                        }
+                    }
+                } else {
+                    return when (activeMonthIdx) {
+                        startMonth -> dayNumber >= startNum
+                        endMonth -> dayNumber <= endNum
+                        in (startMonth + 1) until endMonth -> true
+                        else -> false
                     }
                 }
-
-                val startDay = minOf(startNum, endNum)
-                val endDay = maxOf(startNum, endNum)
-                return dayNumber in startDay..endDay
             }
         }
     }
 
-    val evtMonth = monthMap.entries.find { evtDate.contains(it.key, ignoreCase = true) }?.value
-    if (activeMonthIdx != 0 && evtMonth != null && evtMonth != activeMonthIdx) {
+    if (evtDate.contains("/")) {
+        val slashParts = evtDate.split("/").mapNotNull { it.trim().toIntOrNull() }
+        if (slashParts.size >= 2) {
+            val m = slashParts[0]
+            val d = slashParts[1]
+            if (m == activeMonthIdx && d == dayNumber) return true
+        }
+    }
+
+    val evtMonth = monthMap.entries.find { evtDate.contains(it.key, ignoreCase = true) }?.value ?: activeMonthIdx
+    if (evtMonth != activeMonthIdx) {
         return false
     }
 
-    val dayNum = Regex("\\b([1-9]|[12][0-9]|3[01])\\b").find(evtDate)?.value?.toIntOrNull()
-    return dayNum == dayNumber
+    val daysInEvt = Regex("\\b([1-9]|[12][0-9]|3[01])\\b").findAll(evtDate).mapNotNull { it.value.toIntOrNull() }.toList()
+    return daysInEvt.contains(dayNumber)
 }
 
 fun isSameUnit(unit1: String, unit2: String): Boolean {
@@ -145,7 +155,8 @@ data class UnitCatalogItem(
     val description: String,
     val status: String,
     val imageResId: Int,
-    val imageUri: String? = null
+    val imageUri: String? = null,
+    val rate: Double = 2500.0
 )
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -203,13 +214,23 @@ fun UnitsDirectoryScreen(
         }
     }
 
+    val isPreview = LocalInspectionMode.current
+    DisposableEffect(isPreview) {
+        if (isPreview) {
+            onDispose { }
+        } else {
+            FirebaseCloudSyncManager.startRealtimeCloudListener(context, forceRestart = false)
+            onDispose { }
+        }
+    }
+
     LaunchedEffect(Unit, selectedDayNumber, selectedMonthIndex, selectedYearNumber, timeTrigger, FirebaseCloudSyncManager.globalCloudSyncTrigger.intValue) {
         dbEventsState.value = dbHelper.getAllEvents()
         dbUnitsState.value = dbHelper.getAllUnits()
     }
 
     val deletedPrefs = remember { context.getSharedPreferences("azure_calendar_deleted_units", android.content.Context.MODE_PRIVATE) }
-    val deletedSet = remember(dbUnitsState.value) {
+    val deletedSet = remember(dbUnitsState.value, FirebaseCloudSyncManager.globalCloudSyncTrigger.intValue) {
         deletedPrefs.getStringSet("deleted_unit_numbers", emptySet()).orEmpty()
     }
 
@@ -231,8 +252,14 @@ fun UnitsDirectoryScreen(
                 val num = dbMap["unitNumber"]?.toString() ?: "Unit ${idx + 1}"
                 val tower = dbMap["tower"]?.toString() ?: "Azure Tower"
                 val status = dbMap["status"]?.toString() ?: "Available"
-                val imageUri = dbMap["image_uri"]?.toString()
+                val imageUri = dbMap["image_uri"]?.toString()?.ifBlank { null } ?: dbMap["imageUri"]?.toString()?.ifBlank { null } ?: dbMap["image"]?.toString()?.ifBlank { null }
                 val desc = dbMap["description"]?.toString() ?: "1 Bedroom"
+                val rawRate = dbMap["rate"]
+                val rateVal = when (rawRate) {
+                    is Number -> rawRate.toDouble()
+                    is String -> rawRate.toDoubleOrNull() ?: 2500.0
+                    else -> 2500.0
+                }
                 val unitName = if (num.contains("Unit", ignoreCase = true)) num else "Unit $num"
                 UnitCatalogItem(
                     id = "db-${idx + 1}",
@@ -241,15 +268,20 @@ fun UnitsDirectoryScreen(
                     description = desc,
                     status = status,
                     imageResId = R.drawable.img,
-                    imageUri = imageUri
+                    imageUri = imageUri,
+                    rate = rateVal
                 )
             }
 
-        val allUnitsList = (customUnitsFromDb + defaultUnitsList)
-            .distinctBy { it.unitNumber.replace("Unit", "", ignoreCase = true).trim() }
-            .filter { unit ->
+        val allUnitsList = if (customUnitsFromDb.isNotEmpty()) {
+            customUnitsFromDb.filter { unit ->
                 deletedSet.none { isSameUnit(it, unit.unitNumber) }
             }
+        } else {
+            defaultUnitsList.filter { unit ->
+                deletedSet.none { isSameUnit(it, unit.unitNumber) }
+            }
+        }
 
         allUnitsList.map { unitItem ->
             val matchingEvent = dbEventsState.value.find { evt ->
@@ -273,7 +305,7 @@ fun UnitsDirectoryScreen(
                     val title = matchingEvent["title"] ?: ""
                     val combined = "$shape $title"
                     when {
-                        combined.contains("Not", ignoreCase = true) || combined.contains("Star", ignoreCase = true) -> "Not Available"
+                        combined.contains("Not", ignoreCase = true) || combined.contains("Star", ignoreCase = true) || combined.contains("Rent", ignoreCase = true) -> "Rented"
                         combined.contains("Check", ignoreCase = true) || combined.contains("Heart", ignoreCase = true) -> "Check-in"
                         combined.contains("Reserve", ignoreCase = true) || combined.contains("Diamond", ignoreCase = true) -> "Reserved"
                         combined.contains("Maintenance", ignoreCase = true) || combined.contains("Circle", ignoreCase = true) -> "Under Maintenance"
@@ -293,8 +325,7 @@ fun UnitsDirectoryScreen(
                     unit.tower.contains(searchQuery, ignoreCase = true)
             val matchesFilter = when (selectedFilter) {
                 "All" -> true
-                "Not Available" -> !unit.status.equals("Available", ignoreCase = true)
-                "Rented" -> unit.status.contains("Rented", ignoreCase = true)
+                "Rented" -> unit.status.contains("Rented", ignoreCase = true) || unit.status.contains("Star", ignoreCase = true)
                 else -> unit.status.contains(selectedFilter, ignoreCase = true)
             }
             matchesSearch && matchesFilter
@@ -451,7 +482,7 @@ fun UnitsDirectoryScreen(
         items(filteredUnits) { unit ->
             val isAvailable = unit.status.equals("Available", ignoreCase = true)
             val isRented = unit.status.contains("Rented", ignoreCase = true)
-            val displayStatusText = if (isRented && !unit.status.contains("Not Available", ignoreCase = true)) "Not Available (Rented)" else unit.status
+            val displayStatusText = unit.status
 
             val (statusBg, statusTextCol, dotColor) = when {
                 isAvailable -> Triple(Color(0xFFE8F5E9), Color(0xFF2E7D32), Color(0xFF00A86B))
@@ -485,32 +516,13 @@ fun UnitsDirectoryScreen(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
-                        val uriStr = unit.imageUri ?: ""
-                        val isValidFile = uriStr.isNotBlank() && (uriStr.startsWith("content://") || uriStr.startsWith("file://") || File(uriStr).exists())
-
-                        if (isValidFile) {
-                            val imageModel: Any = if (uriStr.startsWith("file://")) File(Uri.parse(uriStr).path ?: "") else uriStr
-
-                            AsyncImage(
-                                model = imageModel,
-                                contentDescription = unit.unitNumber,
-                                contentScale = ContentScale.Crop,
-                                error = painterResource(id = R.drawable.img),
-                                placeholder = painterResource(id = R.drawable.img),
-                                modifier = Modifier
-                                    .size(75.dp)
-                                    .clip(RoundedCornerShape(12.dp))
-                            )
-                        } else {
-                            Image(
-                                painter = painterResource(id = R.drawable.img),
-                                contentDescription = unit.unitNumber,
-                                contentScale = ContentScale.Crop,
-                                modifier = Modifier
-                                    .size(75.dp)
-                                    .clip(RoundedCornerShape(12.dp))
-                            )
-                        }
+                        UnitImageThumbnail(
+                            imageUri = unit.imageUri,
+                            unitNumber = unit.unitNumber,
+                            modifier = Modifier
+                                .size(75.dp)
+                                .clip(RoundedCornerShape(12.dp))
+                        )
 
                         Column {
                             Text(
@@ -521,7 +533,7 @@ fun UnitsDirectoryScreen(
                             )
                             Spacer(modifier = Modifier.height(2.dp))
                             Text(
-                                text = unit.tower,
+                                text = "${unit.tower} • ₱${unit.rate.toInt()}",
                                 fontSize = 13.sp,
                                 color = TextMuted,
                                 fontWeight = FontWeight.Medium
@@ -770,6 +782,79 @@ fun UnitsDirectoryScreen(
     }
 
 
+}
+
+@Composable
+fun UnitImageThumbnail(
+    imageUri: String?,
+    unitNumber: String,
+    modifier: Modifier = Modifier,
+    placeholderRes: Int = R.drawable.img
+) {
+    val context = LocalContext.current
+    val bitmap = remember(imageUri) {
+        val raw = imageUri?.trim().orEmpty()
+        if (raw.isBlank()) return@remember null
+
+        try {
+            val isBase64 = raw.contains("base64,", ignoreCase = true) ||
+                    raw.startsWith("data:image", ignoreCase = true) ||
+                    raw.startsWith("/9j/", ignoreCase = true) ||
+                    raw.startsWith("iVBORw0KG", ignoreCase = true) ||
+                    raw.length > 100
+
+            if (isBase64) {
+                val base64Part = if (raw.contains("base64,", ignoreCase = true)) {
+                    raw.substringAfter("base64,").trim()
+                } else if (raw.startsWith("data:image", ignoreCase = true)) {
+                    raw.substringAfter(";").substringAfter(",").trim()
+                } else {
+                    raw.trim()
+                }.replace("\\s+".toRegex(), "")
+
+                val bytes = try {
+                    Base64.decode(base64Part, Base64.NO_WRAP)
+                } catch (_: Exception) {
+                    try {
+                        Base64.decode(base64Part, Base64.DEFAULT)
+                    } catch (_: Exception) {
+                        Base64.decode(base64Part, Base64.URL_SAFE)
+                    }
+                }
+                BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+            } else if (raw.startsWith("file://", ignoreCase = true) || raw.startsWith("/data/", ignoreCase = true)) {
+                val cleanPath = if (raw.startsWith("file://", ignoreCase = true)) Uri.parse(raw).path ?: raw.substringAfter("file://") else raw
+                val file = java.io.File(cleanPath)
+                if (file.exists() && file.length() > 0) {
+                    BitmapFactory.decodeFile(file.absolutePath)
+                } else null
+            } else if (raw.startsWith("content://", ignoreCase = true)) {
+                context.contentResolver.openInputStream(Uri.parse(raw))?.use { stream ->
+                    BitmapFactory.decodeStream(stream)
+                }
+            } else {
+                null
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    if (bitmap != null) {
+        Image(
+            bitmap = bitmap.asImageBitmap(),
+            contentDescription = unitNumber,
+            contentScale = ContentScale.Crop,
+            modifier = modifier
+        )
+    } else {
+        Image(
+            painter = painterResource(id = placeholderRes),
+            contentDescription = unitNumber,
+            contentScale = ContentScale.Crop,
+            modifier = modifier
+        )
+    }
 }
 
 @Preview(showBackground = true)

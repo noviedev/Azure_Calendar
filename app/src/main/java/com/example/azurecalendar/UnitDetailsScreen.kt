@@ -33,11 +33,11 @@ import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import com.example.azurecalendar.ui.theme.AzureCalendarTheme
 
-private val PurplePrimary = Color(0xFF6A1B9A)
-private val ScreenBg = Color(0xFFFAF5FC)
-private val CardBg = Color(0xFFFFFFFF)
-private val TextDark = Color(0xFF2C1A36)
-private val TextMuted = Color(0xFF7B6287)
+private val PurplePrimary get() = AzureCalendarColors.PurplePrimary
+private val ScreenBg get() = AzureCalendarColors.ScreenBg
+private val CardBg get() = AzureCalendarColors.CardBg
+private val TextDark get() = AzureCalendarColors.TextDark
+private val TextMuted get() = AzureCalendarColors.TextMuted
 
 @Composable
 fun UnitDetailsScreen(
@@ -117,7 +117,7 @@ fun UnitDetailsScreen(
                 combined.contains("Check", ignoreCase = true) || combined.contains("Heart", ignoreCase = true) -> "Check-in"
                 combined.contains("Reserve", ignoreCase = true) || combined.contains("Diamond", ignoreCase = true) -> "Reserved"
                 combined.contains("Maintenance", ignoreCase = true) || combined.contains("Circle", ignoreCase = true) -> "Under Maintenance"
-                combined.contains("Not", ignoreCase = true) || combined.contains("Star", ignoreCase = true) -> "Not Available"
+                combined.contains("Not", ignoreCase = true) || combined.contains("Star", ignoreCase = true) || combined.contains("Rent", ignoreCase = true) -> "Rented"
                 else -> shape.ifBlank { "Available" }
             }
         } else {
@@ -250,28 +250,12 @@ fun UnitDetailsScreen(
                 .fillMaxWidth()
                 .height(200.dp)
         ) {
-            val isValidUri = !imageUri.isNullOrBlank() && (imageUri.startsWith("content://") || imageUri.startsWith("file://") || java.io.File(imageUri).exists())
-
-            if (isValidUri) {
-                val fileObj = java.io.File(imageUri)
-                val imageModel: Any = if (fileObj.exists()) fileObj else imageUri
-
-                AsyncImage(
-                    model = imageModel,
-                    contentDescription = unitName,
-                    contentScale = ContentScale.Crop,
-                    error = painterResource(id = imageResId),
-                    placeholder = painterResource(id = imageResId),
-                    modifier = Modifier.fillMaxSize()
-                )
-            } else {
-                Image(
-                    painter = painterResource(id = imageResId),
-                    contentDescription = unitName,
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier.fillMaxSize()
-                )
-            }
+            UnitImageThumbnail(
+                imageUri = imageUri,
+                unitNumber = unitName,
+                placeholderRes = imageResId,
+                modifier = Modifier.fillMaxSize()
+            )
         }
 
         // Unit Title & Status

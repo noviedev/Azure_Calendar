@@ -88,8 +88,9 @@ class MainActivity : FragmentActivity() {
                 }
             }
 
-            // 1. Unconditionally start real-time Firestore cloud listeners on app launch with Network enforcement
+            // 1. Unconditionally start real-time Firestore cloud listeners & init theme mode on launch
             LaunchedEffect(Unit) {
+                AzureCalendarColors.initThemeMode(context)
                 val auth = FirebaseAuth.getInstance()
                 val startListeners = {
                     try {

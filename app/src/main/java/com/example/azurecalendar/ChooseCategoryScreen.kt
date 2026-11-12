@@ -35,10 +35,11 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.azurecalendar.ui.theme.AzureCalendarTheme
 
-private val PurplePrimary = Color(0xFF6A1B9A)
-private val ScreenBg = Color(0xFFFAF5FC)
-private val TextDark = Color(0xFF2C1A36)
-private val TextMuted = Color(0xFF7B6287)
+private val PurplePrimary get() = AzureCalendarColors.PurplePrimary
+private val ScreenBg get() = AzureCalendarColors.ScreenBg
+private val CardBg get() = AzureCalendarColors.CardBg
+private val TextDark get() = AzureCalendarColors.TextDark
+private val TextMuted get() = AzureCalendarColors.TextMuted
 
 data class ShapeOption(
     val name: String,
@@ -119,7 +120,7 @@ fun ChooseCategoryScreen(
         ShapeOption("Heart", "Check-in", R.drawable.heart, Color(0xFFE91E63), Color(0xFFFFEBEE)),
         ShapeOption("Diamond", "Reserve", R.drawable.diamond, Color(0xFFF39C12), Color(0xFFFFF3E0)),
         ShapeOption("Circle", "Maintenance", R.drawable.circle, Color(0xFF2196F3), Color(0xFFE3F2FD)),
-        ShapeOption("Star", "Not Available", R.drawable.star, Color(0xFFE53935), Color(0xFFFFEBEE))
+        ShapeOption("Star", "Rented", R.drawable.star, Color(0xFFE53935), Color(0xFFFFEBEE))
     )
 
     val currentFormattedDate = remember(checkInMonth, checkInDay, checkInYear, checkOutMonth, checkOutDay, checkOutYear) {

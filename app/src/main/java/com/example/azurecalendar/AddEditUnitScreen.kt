@@ -41,12 +41,12 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.azurecalendar.ui.theme.AzureCalendarTheme
 
-private val PurplePrimary = Color(0xFF4C2B9E)
-private val ScreenBg = Color(0xFFFAF5FC)
-private val CardBg = Color(0xFFFFFFFF)
-private val TextDark = Color(0xFF2C1A36)
-private val TextMuted = Color(0xFF8C73A6)
-private val BorderPurple = Color(0xFFE2D6F5)
+private val PurplePrimary get() = AzureCalendarColors.PurplePrimary
+private val ScreenBg get() = AzureCalendarColors.ScreenBg
+private val CardBg get() = AzureCalendarColors.CardBg
+private val TextDark get() = AzureCalendarColors.TextDark
+private val TextMuted get() = AzureCalendarColors.TextMuted
+private val BorderPurple get() = AzureCalendarColors.BorderPurple
 
 // Helper function to safely match unit names across different formats (e.g. "12A" vs "Unit 12A")
 private fun isSameUnitLocal(unitA: String, unitB: String): Boolean {
@@ -368,7 +368,7 @@ fun AddEditUnitScreen(
                         FirebaseCloudSyncManager.deleteUnitFromCloud(context, formattedOldUnitNumber)
                     }
 
-                    val imgUriStr = if (savedImagePathStr.isNotBlank()) savedImagePathStr else (selectedImageUri?.toString() ?: "")
+                    val imgUriStr = selectedImageUri?.toString()?.ifBlank { null } ?: savedImagePathStr
                     val rateVal = unitRate.toDoubleOrNull() ?: 2500.0
 
                     val deletedPrefs = context.getSharedPreferences("azure_calendar_deleted_units", android.content.Context.MODE_PRIVATE)

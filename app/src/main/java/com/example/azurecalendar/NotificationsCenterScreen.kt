@@ -1,8 +1,11 @@
 package com.example.azurecalendar
 
 import android.content.Context
+import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -37,12 +40,12 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.azurecalendar.ui.theme.AzureCalendarTheme
 
-private val PurplePrimary = Color(0xFF6A1B9A)
-private val ScreenBg = Color(0xFFFAF5FC)
-private val CardBg = Color(0xFFFFFFFF)
-private val TextDark = Color(0xFF2C1A36)
-private val TextMuted = Color(0xFF7B6287)
-private val BorderPurple = Color(0xFFE0D0EC)
+private val PurplePrimary get() = AzureCalendarColors.PurplePrimary
+private val ScreenBg get() = AzureCalendarColors.ScreenBg
+private val CardBg get() = AzureCalendarColors.CardBg
+private val TextDark get() = AzureCalendarColors.TextDark
+private val TextMuted get() = AzureCalendarColors.TextMuted
+private val BorderPurple get() = AzureCalendarColors.BorderPurple
 
 data class OwnerEventItem(
     val id: String,
@@ -79,7 +82,8 @@ object EventChatRepository {
                     senderRole = "Owner",
                     messageText = "Welcome to the group chat for '$eventTitle'! All joined agents and admin can communicate here.",
                     timestamp = "10:00 AM",
-                    isSelf = false
+                    isSelf = false,
+                    createdTime = 1L
                 )
             )
         }
@@ -166,38 +170,19 @@ fun NotificationsCenterScreen(
         }
     }
 
-    val defaultOwnerEvents = remember {
-        listOf(
-            OwnerEventItem(
-                id = "evt_bukas_grouping",
-                title = "bukas grouping tayo",
-                description = "Owner event created for All Agents.",
-                date = "Nov 7, 2026",
-                time = "1:00 PM",
-                createdBy = "Owner",
-                targetAgent = "All Agents",
-                eventLink = "https://azurecalendar.app/event/join?id=evt_bukas_grouping"
-            ),
-            OwnerEventItem(
-                id = "evt_bai_gilbert",
-                title = "bai",
-                description = "Owner event created for Gilbert.",
-                date = "Nov 6, 2026",
-                time = "2:00 PM",
-                createdBy = "Owner",
-                targetAgent = "Gilbert",
-                eventLink = "https://azurecalendar.app/event/join?id=evt_bai_gilbert"
-            )
-        )
-    }
-
     val combinedEvents = remember(dbOwnerEvents, cloudOwnerEvents, deletedEventIds.toList(), FirebaseCloudSyncManager.globalCloudSyncTrigger.intValue) {
-        val merged = (cloudOwnerEvents + dbOwnerEvents + defaultOwnerEvents)
-        merged.filter {
-            it.id !in deletedEventIds &&
-            it.title !in deletedEventIds &&
-            !it.title.startsWith("Staycation", ignoreCase = true)
-        }.distinctBy { "${it.title.lowercase().trim()}_${it.date}_${it.time}" }
+        val merged = if (cloudOwnerEvents.isNotEmpty()) {
+            cloudOwnerEvents.filter { !it.title.startsWith("Staycation", ignoreCase = true) }
+        } else if (dbOwnerEvents.isNotEmpty()) {
+            dbOwnerEvents.filter {
+                it.id !in deletedEventIds &&
+                it.title !in deletedEventIds &&
+                !it.title.startsWith("Staycation", ignoreCase = true)
+            }
+        } else {
+            emptyList()
+        }
+        merged.distinctBy { "${it.title.lowercase().trim()}_${it.date}_${it.time}" }
     }
 
     val visibleEvents = remember(combinedEvents, agentName, isOwnerMode, FirebaseCloudSyncManager.globalCloudSyncTrigger.intValue) {
@@ -220,18 +205,26 @@ fun NotificationsCenterScreen(
                 if (target.isBlank() || targetClean.contains("all agents") || targetClean == "all") {
                     true
                 } else {
-                    // Check if targetAgent contains this specific agent's name, username, or email token
-                    val paramTokens = cleanParamName.split(" ", ",", ".").filter { it.length >= 3 }
-                    val sessionTokens = sessionName.split(" ", ",", ".").filter { it.length >= 3 }
-                    val emailTokens = emailPrefix.split(" ", ",", ".").filter { it.length >= 3 }
-                    val allTokens = (paramTokens + sessionTokens + emailTokens).distinct()
+                    val userIdentifiers = listOf(
+                        cleanParamName,
+                        sessionName,
+                        emailPrefix
+                    ).filter { it.isNotBlank() }
 
-                    targetClean.contains(cleanParamName) ||
-                    cleanParamName.contains(targetClean) ||
-                    (sessionName.isNotBlank() && (targetClean.contains(sessionName) || sessionName.contains(targetClean))) ||
-                    (emailPrefix.isNotBlank() && targetClean.contains(emailPrefix)) ||
-                    allTokens.any { token -> targetClean.contains(token) } ||
-                    UserSessionManager.isSameCreator(target, agentName)
+                    val targetItems = targetClean.split(",", ";", "and").map { it.trim() }.filter { it.isNotBlank() }
+
+                    val exactMatch = targetItems.any { item ->
+                        userIdentifiers.any { user ->
+                            user == item || user.contains(item) || item.contains(user)
+                        }
+                    }
+
+                    val tokenMatch = userIdentifiers.any { user ->
+                        val tokens = user.split(" ", ".", "_").filter { it.length >= 3 }
+                        tokens.any { t -> targetClean.contains(t) }
+                    }
+
+                    exactMatch || tokenMatch || UserSessionManager.isSameCreator(target, agentName)
                 }
             }
         }
@@ -367,12 +360,12 @@ fun NotificationsCenterScreen(
                 val isChatRead = remember(chatRoomId, totalRoomMessages, FirebaseCloudSyncManager.globalCloudSyncTrigger.intValue) {
                     chatPrefs.getBoolean("read_all_${chatRoomId}_$userNameKey", false)
                 }
-                val unreadChatMsgCount = if (isChatRead && totalRoomMessages <= currentReadCount) 0 else (totalRoomMessages - currentReadCount).coerceAtLeast(0)
+                val unreadChatMsgCount = if (isChatRead || currentReadCount >= totalRoomMessages) 0 else (totalRoomMessages - currentReadCount).coerceAtLeast(0)
 
                 Card(
                     shape = RoundedCornerShape(16.dp),
                     colors = CardDefaults.cardColors(containerColor = CardBg),
-                    elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
+                    elevation = CardDefaults.cardElevation(defaultElevation = if (isOwnerMode) 1.dp else 1.dp),
                     modifier = Modifier
                         .fillMaxWidth()
                         .clickable {
@@ -381,7 +374,7 @@ fun NotificationsCenterScreen(
                             val sPrefs = context.getSharedPreferences("azure_calendar_event_reads", Context.MODE_PRIVATE)
 
                             cPrefs.edit()
-                                .putInt("read_count_${chatRoomId}_$userName", totalRoomMessages)
+                                .putInt("read_count_${chatRoomId}_$userName", maxOf(totalRoomMessages, 99999))
                                 .putBoolean("read_all_${chatRoomId}_$userName", true)
                                 .apply()
                             sPrefs.edit()
@@ -473,7 +466,7 @@ fun NotificationsCenterScreen(
                                 val sPrefs = context.getSharedPreferences("azure_calendar_event_reads", Context.MODE_PRIVATE)
 
                                 cPrefs.edit()
-                                    .putInt("read_count_${chatRoomId}_$userName", totalRoomMessages)
+                                    .putInt("read_count_${chatRoomId}_$userName", maxOf(totalRoomMessages, 99999))
                                     .putBoolean("read_all_${chatRoomId}_$userName", true)
                                     .apply()
                                 sPrefs.edit()
@@ -901,6 +894,12 @@ fun NotificationsCenterScreen(
                                 "shape" to "Owner Event",
                                 "color" to 0L
                             )
+                            deletedEventIds.remove(newId)
+                            deletedEventIds.remove(newTitle)
+                            if (!isPreview) {
+                                prefs.edit().putStringSet("deleted_ids", deletedEventIds.toSet()).apply()
+                            }
+
                             FirebaseCloudSyncManager.pushEventToCloud(eventMap)
                             FirebaseCloudSyncManager.pushOwnerEventToCloud(
                                 id = newId,
@@ -978,14 +977,59 @@ fun EventGroupChatView(
         }
     }
 
-    val displayMessages = remember(dbMessages, memoryMessages.toList(), cloudMessages, syncTrigger) {
-        val liveDbMsgs = dbHelper.getChatMessagesForRoom(chatRoomId)
-        val combined = (liveDbMsgs + dbMessages + memoryMessages + cloudMessages)
-        combined.distinctBy { "${it.senderName.trim().lowercase()}_${it.messageText.trim()}_${it.timestamp}" }
-            .sortedBy { if (it.createdTime > 0L) it.createdTime else it.id.replace(Regex("[^0-9]"), "").toLongOrNull() ?: 0L }
+    // Launcher for attaching photos in group chat
+    val chatPhotoLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            val base64DataUri = FirebaseCloudSyncManager.prepareImageForCloud(context, uri.toString())
+            if (base64DataUri.isNotBlank()) {
+                val imagePayload = "[IMAGE]:$base64DataUri"
+                val timeFormatted = java.text.SimpleDateFormat("h:mm a", java.util.Locale.US).format(java.util.Date())
+                val msgId = "msg_${System.currentTimeMillis()}"
+
+                val newMsg = GroupChatMessage(
+                    id = msgId,
+                    senderName = currentUserName,
+                    senderRole = if (isOwnerMode) "Owner" else "Agent",
+                    messageText = imagePayload,
+                    timestamp = timeFormatted,
+                    isSelf = true
+                )
+                memoryMessages.add(newMsg)
+                dbHelper.insertChatMessage(
+                    msgId = msgId,
+                    roomId = chatRoomId,
+                    senderName = currentUserName,
+                    senderRole = if (isOwnerMode) "Owner" else "Agent",
+                    text = imagePayload,
+                    timestamp = timeFormatted
+                )
+
+                FirebaseCloudSyncManager.pushChatMessageToCloud(
+                    msgId = msgId,
+                    eventId = event.id,
+                    eventTitle = event.title,
+                    senderName = currentUserName,
+                    senderRole = if (isOwnerMode) "Owner" else "Agent",
+                    messageText = imagePayload,
+                    timestamp = timeFormatted
+                )
+
+                FirebaseCloudSyncManager.notifyCloudUpdate()
+                Toast.makeText(context, "Photo sent to event group chat!", Toast.LENGTH_SHORT).show()
+            }
+        }
     }
 
-    LaunchedEffect(displayMessages.size, chatRoomId) {
+    val liveDbMsgs = dbHelper.getChatMessagesForRoom(chatRoomId)
+    val displayMessages = (liveDbMsgs + dbMessages + memoryMessages + cloudMessages)
+        .distinctBy { if (it.id.isNotBlank()) it.id else "${it.senderName.trim().lowercase()}_${it.messageText.trim()}_${it.createdTime}" }
+        .sortedBy { if (it.createdTime > 0L) it.createdTime else it.id.replace(Regex("[^0-9]"), "").toLongOrNull() ?: 0L }
+
+    val chatListState = androidx.compose.foundation.lazy.rememberLazyListState()
+
+    LaunchedEffect(displayMessages.hashCode(), displayMessages.size, chatRoomId) {
         val userName = if (isOwnerMode) "Admin Owner" else currentUserName
         val chatPrefs = context.getSharedPreferences("azure_calendar_chat_reads", Context.MODE_PRIVATE)
         val seenPrefs = context.getSharedPreferences("azure_calendar_event_reads", Context.MODE_PRIVATE)
@@ -999,7 +1043,10 @@ fun EventGroupChatView(
             .putBoolean("seen_event_${event.id}_$userName", true)
             .putBoolean("seen_event_${event.title}_$userName", true)
             .apply()
-        FirebaseCloudSyncManager.notifyCloudUpdate()
+
+        if (displayMessages.isNotEmpty()) {
+            chatListState.scrollToItem(displayMessages.size)
+        }
     }
 
     Column(
@@ -1081,6 +1128,7 @@ fun EventGroupChatView(
 
         // Chat Message List
         LazyColumn(
+            state = chatListState,
             modifier = Modifier
                 .weight(1f)
                 .fillMaxWidth()
@@ -1111,10 +1159,22 @@ fun EventGroupChatView(
                 }
             }
 
-            items(displayMessages) { msg ->
+            items(items = displayMessages, key = { msg -> msg.id }) { msg ->
                 val isMe = msg.senderName.equals(currentUserName, ignoreCase = true) ||
                            (isOwnerMode && msg.senderRole.equals("Owner", ignoreCase = true)) ||
                            (!isOwnerMode && msg.senderRole.equals("Agent", ignoreCase = true) && msg.senderName.contains(currentUserName, ignoreCase = true))
+
+                val isImageMsg = msg.messageText.startsWith("[IMAGE]:", ignoreCase = true) ||
+                                 msg.messageText.startsWith("data:image", ignoreCase = true) ||
+                                 msg.messageText.startsWith("content://", ignoreCase = true) ||
+                                 msg.messageText.startsWith("file://", ignoreCase = true) ||
+                                 msg.messageText.startsWith("/data/", ignoreCase = true)
+
+                val rawImagePayload = if (msg.messageText.startsWith("[IMAGE]:", ignoreCase = true)) {
+                    msg.messageText.substringAfter("[IMAGE]:").trim()
+                } else {
+                    msg.messageText.trim()
+                }
 
                 Column(
                     modifier = Modifier.fillMaxWidth(),
@@ -1128,31 +1188,84 @@ fun EventGroupChatView(
                     )
                     Spacer(modifier = Modifier.height(2.dp))
 
-                    Surface(
-                        shape = RoundedCornerShape(
-                            topStart = 16.dp,
-                            topEnd = 16.dp,
-                            bottomStart = if (isMe) 16.dp else 4.dp,
-                            bottomEnd = if (isMe) 4.dp else 16.dp
-                        ),
-                        color = if (isMe) PurplePrimary else CardBg,
-                        border = if (isMe) null else BorderStroke(1.dp, BorderPurple),
-                        shadowElevation = 1.dp
-                    ) {
-                        Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp)) {
-                            Text(
-                                text = msg.messageText,
-                                fontSize = 13.sp,
-                                color = if (isMe) Color.White else TextDark,
-                                lineHeight = 17.sp
-                            )
-                            Spacer(modifier = Modifier.height(2.dp))
-                            Text(
-                                text = msg.timestamp,
-                                fontSize = 9.sp,
-                                color = if (isMe) Color.White.copy(alpha = 0.7f) else TextMuted,
-                                modifier = Modifier.align(Alignment.End)
-                            )
+                    if (isImageMsg) {
+                        val imageModel: Any? = when {
+                            rawImagePayload.isBlank() -> null
+                            rawImagePayload.startsWith("data:image", ignoreCase = true) -> rawImagePayload
+                            rawImagePayload.startsWith("file://", ignoreCase = true) -> {
+                                val path = android.net.Uri.parse(rawImagePayload).path ?: rawImagePayload.substringAfter("file://")
+                                val f = java.io.File(path)
+                                if (f.exists()) f else null
+                            }
+                            rawImagePayload.startsWith("content://", ignoreCase = true) || rawImagePayload.startsWith("http", ignoreCase = true) -> rawImagePayload
+                            else -> {
+                                val f = java.io.File(rawImagePayload)
+                                if (f.exists()) f else null
+                            }
+                        }
+
+                        Surface(
+                            shape = RoundedCornerShape(16.dp),
+                            color = if (isMe) PurplePrimary else CardBg,
+                            border = if (isMe) null else BorderStroke(1.dp, BorderPurple),
+                            shadowElevation = 2.dp,
+                            modifier = Modifier.widthIn(max = 240.dp)
+                        ) {
+                            Column(modifier = Modifier.padding(6.dp)) {
+                                if (imageModel != null) {
+                                    coil.compose.AsyncImage(
+                                        model = imageModel,
+                                        contentDescription = "Chat Photo",
+                                        contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(170.dp)
+                                            .clip(RoundedCornerShape(12.dp))
+                                    )
+                                } else {
+                                    Text(
+                                        text = "[Photo]",
+                                        fontSize = 13.sp,
+                                        color = if (isMe) Color.White else TextDark,
+                                        modifier = Modifier.padding(8.dp)
+                                    )
+                                }
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
+                                    text = msg.timestamp,
+                                    fontSize = 9.sp,
+                                    color = if (isMe) Color.White.copy(alpha = 0.7f) else TextMuted,
+                                    modifier = Modifier.align(Alignment.End).padding(end = 4.dp, bottom = 2.dp)
+                                )
+                            }
+                        }
+                    } else {
+                        Surface(
+                            shape = RoundedCornerShape(
+                                topStart = 16.dp,
+                                topEnd = 16.dp,
+                                bottomStart = if (isMe) 16.dp else 4.dp,
+                                bottomEnd = if (isMe) 4.dp else 16.dp
+                            ),
+                            color = if (isMe) PurplePrimary else CardBg,
+                            border = if (isMe) null else BorderStroke(1.dp, BorderPurple),
+                            shadowElevation = 1.dp
+                        ) {
+                            Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp)) {
+                                Text(
+                                    text = msg.messageText,
+                                    fontSize = 13.sp,
+                                    color = if (isMe) Color.White else TextDark,
+                                    lineHeight = 17.sp
+                                )
+                                Spacer(modifier = Modifier.height(2.dp))
+                                Text(
+                                    text = msg.timestamp,
+                                    fontSize = 9.sp,
+                                    color = if (isMe) Color.White.copy(alpha = 0.7f) else TextMuted,
+                                    modifier = Modifier.align(Alignment.End)
+                                )
+                            }
                         }
                     }
                 }
@@ -1172,6 +1285,27 @@ fun EventGroupChatView(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
+                IconButton(
+                    onClick = {
+                        try {
+                            chatPhotoLauncher.launch("image/*")
+                        } catch (e: Exception) {
+                            Toast.makeText(context, "Opening gallery...", Toast.LENGTH_SHORT).show()
+                        }
+                    },
+                    modifier = Modifier
+                        .size(42.dp)
+                        .clip(CircleShape)
+                        .background(Color(0xFFF3EDFD))
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.AddPhotoAlternate,
+                        contentDescription = "Attach Photo",
+                        tint = PurplePrimary,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+
                 OutlinedTextField(
                     value = messageInput,
                     onValueChange = { messageInput = it },
@@ -1210,6 +1344,7 @@ fun EventGroupChatView(
                             )
 
                             FirebaseCloudSyncManager.pushChatMessageToCloud(
+                                msgId = msgId,
                                 eventId = event.id,
                                 eventTitle = event.title,
                                 senderName = currentUserName,

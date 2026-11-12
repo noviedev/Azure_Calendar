@@ -34,11 +34,11 @@ import androidx.compose.ui.unit.sp
 import com.example.azurecalendar.ui.theme.AzureCalendarTheme
 
 private val PurplePrimary get() = AzureCalendarColors.PurplePrimary
-private val ScreenBg = Color(0xFFFAF5FC)
-private val CardBg = Color(0xFFFFFFFF)
-private val TextDark = Color(0xFF2C1A36)
-private val TextMuted = Color(0xFF7B6287)
-private val BorderPurple = Color(0xFFE0D0EC)
+private val ScreenBg get() = AzureCalendarColors.ScreenBg
+private val CardBg get() = AzureCalendarColors.CardBg
+private val TextDark get() = AzureCalendarColors.TextDark
+private val TextMuted get() = AzureCalendarColors.TextMuted
+private val BorderPurple get() = AzureCalendarColors.BorderPurple
 
 data class OwnerMetricsData(
     val totalUnits: String = "0",
@@ -93,33 +93,12 @@ fun OwnerDashboardScreen(
         }
     }
 
-    val defaultOwnerEvents = remember {
-        listOf(
-            OwnerEventItem(
-                id = "evt_bukas_grouping",
-                title = "bukas grouping tayo",
-                description = "Owner event created for All Agents.",
-                date = "Nov 7, 2026",
-                time = "1:00 PM",
-                createdBy = "Owner",
-                targetAgent = "All Agents",
-                eventLink = "https://azurecalendar.app/event/join?id=evt_bukas_grouping"
-            ),
-            OwnerEventItem(
-                id = "evt_bai_gilbert",
-                title = "bai",
-                description = "Owner event created for Gilbert.",
-                date = "Nov 6, 2026",
-                time = "2:00 PM",
-                createdBy = "Owner",
-                targetAgent = "Gilbert",
-                eventLink = "https://azurecalendar.app/event/join?id=evt_bai_gilbert"
-            )
-        )
-    }
-
     val allOwnerEvents = remember(cloudOwnerEvents, FirebaseCloudSyncManager.globalCloudSyncTrigger.intValue) {
-        val dbOwnerEvts = if (isPreview) emptyList() else {
+        val rawList = if (cloudOwnerEvents.isNotEmpty()) {
+            cloudOwnerEvents
+        } else if (isPreview) {
+            emptyList()
+        } else {
             dbHelper.getAllEvents().filter { evt ->
                 val title = evt["title"] ?: ""
                 val unit = evt["unit"] ?: ""
@@ -128,19 +107,20 @@ fun OwnerDashboardScreen(
                 !isStaycation && (unit.equals("Event", ignoreCase = true) || shape.contains("Owner Event", ignoreCase = true))
             }.map { evt ->
                 val evtId = evt["id"] ?: "0"
+                val targetAg = evt["agent"]?.ifBlank { "All Agents" } ?: "All Agents"
                 OwnerEventItem(
                     id = evtId,
                     title = evt["title"] ?: "Owner Event",
-                    description = "Created by Owner/Admin for Agents",
+                    description = "Created by Owner/Admin for $targetAg",
                     date = evt["date"] ?: "Sept 15, 2026",
                     time = evt["time"] ?: "2:00 PM",
                     createdBy = "Owner",
-                    targetAgent = "All Agents",
+                    targetAgent = targetAg,
                     eventLink = "https://azurecalendar.app/event/join?id=$evtId"
                 )
             }
         }
-        (cloudOwnerEvents + dbOwnerEvts + defaultOwnerEvents).distinctBy { "${it.title.lowercase().trim()}_${it.date}_${it.time}" }
+        rawList.distinctBy { "${it.title.lowercase().trim()}_${it.date}_${it.time}" }
     }
 
     LaunchedEffect(selectedTab) {
@@ -524,25 +504,55 @@ private fun OwnerCalendarTabContent(
 
                         HorizontalDivider(color = Color(0xFFF3E5F5))
 
-                        val deletedSet = deletedPrefs.getStringSet("deleted_unit_numbers", emptySet()).orEmpty()
-                        val dbUnits = dbUnitsState.value.mapNotNull { it["unitNumber"]?.toString() }
+                        val deletedSet = remember(dbUnitsState.value, syncVersion) {
+                            deletedPrefs.getStringSet("deleted_unit_numbers", emptySet()).orEmpty()
+                        }
+                        val dbUnits = dbUnitsState.value
+                            .mapNotNull { it["unitNumber"]?.toString() }
+                            .filter { num ->
+                                val clean = num.replace("Unit", "", ignoreCase = true).trim()
+                                clean.isNotBlank() && !clean.equals("Event", ignoreCase = true) && !clean.contains("Meeting", ignoreCase = true) && !clean.contains("Owner Event", ignoreCase = true)
+                            }
                         val defaultUnits = listOf("Unit 12A", "Unit 15B", "Unit 08C", "Unit 06D")
-                        val unitList = (dbUnits + defaultUnits)
-                            .distinctBy { it.replace("Unit", "", ignoreCase = true).trim() }
+                        val unitList = (if (dbUnits.isNotEmpty()) dbUnits else defaultUnits)
+                            .distinctBy { it.replace("Unit", "", ignoreCase = true).trim().uppercase() }
                             .filter { uNum -> deletedSet.none { del -> isSameUnit(del, uNum) } }
-                        val eventsForSelectedDay = selectedDayModel?.events.orEmpty()
 
                         unitList.forEach { uName ->
                             val cleanU = uName.replace("Unit", "", ignoreCase = true).trim()
-                            val matchingEvt = eventsForSelectedDay.find {
-                                val evtUnit = it.unitNumber.replace("Unit", "", ignoreCase = true).trim()
-                                evtUnit.equals(cleanU, ignoreCase = true) || it.unitNumber.contains(uName, ignoreCase = true)
+
+                            val matchingEvt = dbEventsState.value.filter { evt ->
+                                val evtDate = evt["date"] ?: ""
+                                val evtUnit = evt["unit"] ?: ""
+                                val evtTime = evt["time"] ?: "12:00 PM"
+                                val isExpired = FirebaseCloudSyncManager.isEventDateExpired(evtDate, evtTime)
+                                isSameUnit(evtUnit, cleanU) && !isExpired && isDateCoveredByEvent(evtDate, selectedDayNumber, activeMonthName, activeYearNumber)
+                            }.firstOrNull { evt ->
+                                val shape = (evt["shape"] ?: "").lowercase()
+                                !shape.contains("available") || shape.contains("not")
+                            } ?: dbEventsState.value.find { evt ->
+                                val evtDate = evt["date"] ?: ""
+                                val evtUnit = evt["unit"] ?: ""
+                                val evtTime = evt["time"] ?: "12:00 PM"
+                                val isExpired = FirebaseCloudSyncManager.isEventDateExpired(evtDate, evtTime)
+                                isSameUnit(evtUnit, cleanU) && !isExpired && isDateCoveredByEvent(evtDate, selectedDayNumber, activeMonthName, activeYearNumber)
                             }
-                            val unitDbStatus = dbUnitsState.value.find { isSameUnit(it["unitNumber"]?.toString() ?: "", uName) }?.get("status")?.toString() ?: "Available"
-                            val rawStatus = matchingEvt?.description?.replace("Category: ", "")?.ifBlank {
-                                if (unitDbStatus.contains("Maintenance", ignoreCase = true) || unitDbStatus.contains("Rented", ignoreCase = true) || unitDbStatus.contains("Not Available", ignoreCase = true)) unitDbStatus else "Available"
-                            } ?: "Available"
-                            val status = rawStatus.ifBlank { "Available" }
+
+                            val status = if (matchingEvt != null) {
+                                val rawShape = (matchingEvt["shape"] ?: "").ifBlank {
+                                    (matchingEvt["title"] ?: "").replace("Staycation - ", "").replace(" Tag", "").trim()
+                                }
+                                when {
+                                    rawShape.contains("Check", ignoreCase = true) || rawShape.contains("Heart", ignoreCase = true) -> "Check-In"
+                                    rawShape.contains("Reserve", ignoreCase = true) || rawShape.contains("Diamond", ignoreCase = true) -> "Reserve"
+                                    rawShape.contains("Maintenance", ignoreCase = true) || rawShape.contains("Circle", ignoreCase = true) -> "Under Maintenance"
+                                    rawShape.contains("Not", ignoreCase = true) || rawShape.contains("Star", ignoreCase = true) || rawShape.contains("Rent", ignoreCase = true) -> "Rented"
+                                    rawShape.contains("Rent", ignoreCase = true) -> "Rented"
+                                    else -> rawShape.ifBlank { "Available" }
+                                }
+                            } else {
+                                "Available"
+                            }
                             val (statusBg, statusTextCol, dotColor) = when {
                                 status.contains("Available", ignoreCase = true) && !status.contains("Not", ignoreCase = true) -> Triple(Color(0xFFE8F5E9), Color(0xFF2E7D32), Color(0xFF00A86B))
                                 status.contains("Check", ignoreCase = true) || status.contains("Heart", ignoreCase = true) -> Triple(Color(0xFFFFEBEE), Color(0xFFC2185B), Color(0xFFE91E63))
@@ -641,7 +651,8 @@ private fun OwnerDashboardHomeContent(
             val deletedSet = deletedPrefs.getStringSet("deleted_unit_numbers", emptySet()).orEmpty()
             val dbUnits = dbUnitsState.value.filter { unitMap ->
                 val num = unitMap["unitNumber"]?.toString() ?: ""
-                deletedSet.none { isSameUnit(it, num) }
+                val clean = num.replace("Unit", "", ignoreCase = true).trim()
+                clean.isNotBlank() && !clean.equals("Event", ignoreCase = true) && !clean.contains("Meeting", ignoreCase = true) && !clean.contains("Owner Event", ignoreCase = true) && deletedSet.none { isSameUnit(it, num) }
             }
             val dbEvents = dbEventsState.value
 
@@ -649,7 +660,9 @@ private fun OwnerDashboardHomeContent(
                 .filter { defNum -> deletedSet.none { isSameUnit(it, defNum) } }
 
             val customUnitNums = dbUnits.mapNotNull { it["unitNumber"]?.toString() }
-            val allUnitNums = (customUnitNums + defaultUnits).distinctBy { it.replace("Unit", "", ignoreCase = true).trim() }
+            val allUnitNums = (if (customUnitNums.isNotEmpty()) customUnitNums else defaultUnits)
+                .distinctBy { it.replace("Unit", "", ignoreCase = true).trim().uppercase() }
+                .filter { uNum -> deletedSet.none { isSameUnit(it, uNum) } }
 
             val totalUnits = allUnitNums.size
 

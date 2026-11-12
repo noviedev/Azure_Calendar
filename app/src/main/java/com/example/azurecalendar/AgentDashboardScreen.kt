@@ -43,10 +43,10 @@ import coil.compose.AsyncImage
 import com.example.azurecalendar.ui.theme.AzureCalendarTheme
 
 private val PurplePrimary get() = AzureCalendarColors.PurplePrimary
-private val ScreenBg = Color(0xFFFAF7FF)
-private val CardBg = Color(0xFFFFFFFF)
-private val TextDark = Color(0xFF2C1A36)
-private val TextMuted = Color(0xFF7B6287)
+private val ScreenBg get() = AzureCalendarColors.ScreenBg
+private val CardBg get() = AzureCalendarColors.CardBg
+private val TextDark get() = AzureCalendarColors.TextDark
+private val TextMuted get() = AzureCalendarColors.TextMuted
 
 data class AgentMetricsData(
     val available: String = "0",
@@ -84,33 +84,12 @@ fun AgentDashboardScreen(
 
     var selectedTab by rememberSaveable { mutableIntStateOf(0) } // 0: Home, 1: Calendar, 2: Units, 3: Event, 4: Profile
 
-    val defaultOwnerEvents = remember {
-        listOf(
-            OwnerEventItem(
-                id = "evt_bukas_grouping",
-                title = "bukas grouping tayo",
-                description = "Owner event created for All Agents.",
-                date = "Nov 7, 2026",
-                time = "1:00 PM",
-                createdBy = "Owner",
-                targetAgent = "All Agents",
-                eventLink = "https://azurecalendar.app/event/join?id=evt_bukas_grouping"
-            ),
-            OwnerEventItem(
-                id = "evt_bai_gilbert",
-                title = "bai",
-                description = "Owner event created for Gilbert.",
-                date = "Nov 6, 2026",
-                time = "2:00 PM",
-                createdBy = "Owner",
-                targetAgent = "Gilbert",
-                eventLink = "https://azurecalendar.app/event/join?id=evt_bai_gilbert"
-            )
-        )
-    }
-
     val allOwnerEvents = remember(cloudOwnerEvents, FirebaseCloudSyncManager.globalCloudSyncTrigger.intValue) {
-        val dbOwnerEvts = if (isPreview) emptyList() else {
+        val rawList = if (cloudOwnerEvents.isNotEmpty()) {
+            cloudOwnerEvents
+        } else if (isPreview) {
+            emptyList()
+        } else {
             dbHelper.getAllEvents().filter { evt ->
                 val title = evt["title"] ?: ""
                 val unit = evt["unit"] ?: ""
@@ -119,19 +98,20 @@ fun AgentDashboardScreen(
                 !isStaycation && (unit.equals("Event", ignoreCase = true) || shape.contains("Owner Event", ignoreCase = true))
             }.map { evt ->
                 val evtId = evt["id"] ?: "0"
+                val targetAg = evt["agent"]?.ifBlank { "All Agents" } ?: "All Agents"
                 OwnerEventItem(
                     id = evtId,
                     title = evt["title"] ?: "Owner Event",
-                    description = "Created by Owner/Admin for Agents",
+                    description = "Created by Owner/Admin for $targetAg",
                     date = evt["date"] ?: "Sept 15, 2026",
                     time = evt["time"] ?: "2:00 PM",
                     createdBy = "Owner",
-                    targetAgent = "All Agents",
+                    targetAgent = targetAg,
                     eventLink = "https://azurecalendar.app/event/join?id=$evtId"
                 )
             }
         }
-        (cloudOwnerEvents + dbOwnerEvts + defaultOwnerEvents).distinctBy { "${it.title.lowercase().trim()}_${it.date}_${it.time}" }
+        rawList.distinctBy { "${it.title.lowercase().trim()}_${it.date}_${it.time}" }
     }
 
     LaunchedEffect(selectedTab) {
@@ -153,7 +133,34 @@ fun AgentDashboardScreen(
             val chatPrefs = context.getSharedPreferences("azure_calendar_chat_reads", Context.MODE_PRIVATE)
             val seenPrefs = context.getSharedPreferences("azure_calendar_event_reads", Context.MODE_PRIVATE)
 
-            val activeEvents = allOwnerEvents.filter {
+            val infoPrefs = context.getSharedPreferences("azure_calendar_personal_info", Context.MODE_PRIVATE)
+            val storedEmail = infoPrefs.getString("email_$agentName", "") ?: ""
+            val emailPrefix = storedEmail.substringBefore("@").trim().lowercase()
+            val sessionManager = UserSessionManager(context)
+            val sessionName = sessionManager.getUsername().trim().lowercase()
+            val cleanParamName = agentName.trim().lowercase()
+
+            val targetedEvents = allOwnerEvents.filter { event ->
+                val target = event.targetAgent.trim()
+                val targetClean = target.lowercase()
+
+                if (target.isBlank() || targetClean.contains("all agents") || targetClean == "all") {
+                    true
+                } else {
+                    val userIdentifiers = listOf(cleanParamName, sessionName, emailPrefix).filter { it.isNotBlank() }
+                    val targetItems = targetClean.split(",", ";", "and").map { it.trim() }.filter { it.isNotBlank() }
+                    val exactMatch = targetItems.any { item ->
+                        userIdentifiers.any { user -> user == item || user.contains(item) || item.contains(user) }
+                    }
+                    val tokenMatch = userIdentifiers.any { user ->
+                        val tokens = user.split(" ", ".", "_").filter { it.length >= 3 }
+                        tokens.any { t -> targetClean.contains(t) }
+                    }
+                    exactMatch || tokenMatch || UserSessionManager.isSameCreator(target, agentName)
+                }
+            }
+
+            val activeEvents = targetedEvents.filter {
                 it.id !in deletedSet && it.title !in deletedSet && !it.title.startsWith("Staycation", ignoreCase = true)
             }
 
@@ -162,7 +169,7 @@ fun AgentDashboardScreen(
                 val chatRoomId = FirebaseCloudSyncManager.getNormalizedEventId(event.id, event.title)
                 val dbMsgs = dbHelper.getChatMessagesForRoom(chatRoomId)
                 val memMsgs = EventChatRepository.getMessagesForEvent(chatRoomId, event.title, event.targetAgent)
-                val totalRoomMsgs = (dbMsgs + memMsgs).distinctBy { "${it.senderName.trim().lowercase()}_${it.messageText.trim()}_${it.timestamp}" }.size
+                val totalRoomMsgs = (dbMsgs + memMsgs).distinctBy { if (it.id.isNotBlank()) it.id else "${it.senderName.trim().lowercase()}_${it.messageText.trim()}_${it.timestamp}" }.size
 
                 val lastReadCount = chatPrefs.getInt("read_count_${chatRoomId}_$agentName", 0)
                 val isChatRead = chatPrefs.getBoolean("read_all_${chatRoomId}_$agentName", false)
@@ -750,7 +757,8 @@ private fun HomeDashboardContent(
                 val deletedSet = deletedPrefs.getStringSet("deleted_unit_numbers", emptySet()).orEmpty()
                 val dbUnits = dbUnitsState.value.filter { unitMap ->
                     val num = unitMap["unitNumber"]?.toString() ?: ""
-                    deletedSet.none { isSameUnit(it, num) }
+                    val clean = num.replace("Unit", "", ignoreCase = true).trim()
+                    clean.isNotBlank() && !clean.equals("Event", ignoreCase = true) && !clean.contains("Meeting", ignoreCase = true) && !clean.contains("Owner Event", ignoreCase = true) && deletedSet.none { isSameUnit(it, num) }
                 }
                 val dbEvents = dbEventsState.value
 
@@ -758,7 +766,9 @@ private fun HomeDashboardContent(
                     .filter { defNum -> deletedSet.none { isSameUnit(it, defNum) } }
 
                 val customUnitNums = dbUnits.mapNotNull { it["unitNumber"]?.toString() }
-                val allUnitNums = (customUnitNums + defaultUnits).distinctBy { it.replace("Unit", "", ignoreCase = true).trim() }
+                val allUnitNums = (if (customUnitNums.isNotEmpty()) customUnitNums else defaultUnits)
+                    .distinctBy { it.replace("Unit", "", ignoreCase = true).trim().uppercase() }
+                    .filter { uNum -> deletedSet.none { isSameUnit(it, uNum) } }
 
                 var occCount = 0
                 var resCount = 0
@@ -1494,20 +1504,56 @@ private fun CalendarTabContent(
 
                         HorizontalDivider(color = Color(0xFFF3E5F5))
 
+                        val deletedPrefs = remember { context.getSharedPreferences("azure_calendar_deleted_units", Context.MODE_PRIVATE) }
+                        val deletedSet = remember(dbUnitsState.value, syncVersion) {
+                            deletedPrefs.getStringSet("deleted_unit_numbers", emptySet()).orEmpty()
+                        }
+                        val dbUnits = dbUnitsState.value
+                            .mapNotNull { it["unitNumber"]?.toString() }
+                            .filter { num ->
+                                val clean = num.replace("Unit", "", ignoreCase = true).trim()
+                                clean.isNotBlank() && !clean.equals("Event", ignoreCase = true) && !clean.contains("Meeting", ignoreCase = true) && !clean.contains("Owner Event", ignoreCase = true)
+                            }
                         val defaultUnits = listOf("Unit 12A", "Unit 15B", "Unit 08C", "Unit 06D")
-                        val dbUnits = dbUnitsState.value.mapNotNull { it["unitNumber"]?.toString() }
-                        val unitList = (dbUnits + defaultUnits)
-                            .distinctBy { it.replace("Unit", "", ignoreCase = true).trim() }
-                        val eventsForSelectedDay = selectedDayModel?.events.orEmpty()
+                        val unitList = (if (dbUnits.isNotEmpty()) dbUnits else defaultUnits)
+                            .distinctBy { it.replace("Unit", "", ignoreCase = true).trim().uppercase() }
+                            .filter { uNum -> deletedSet.none { del -> isSameUnit(del, uNum) } }
 
                         unitList.forEach { uName ->
                             val cleanU = uName.replace("Unit", "", ignoreCase = true).trim()
-                            val matchingEvt = eventsForSelectedDay.find {
-                                val evtUnit = it.unitNumber.replace("Unit", "", ignoreCase = true).trim()
-                                evtUnit.equals(cleanU, ignoreCase = true) || it.unitNumber.contains(uName, ignoreCase = true)
+
+                            val matchingEvt = dbEventsState.value.filter { evt ->
+                                val evtDate = evt["date"] ?: ""
+                                val evtUnit = evt["unit"] ?: ""
+                                val evtTime = evt["time"] ?: "12:00 PM"
+                                val isExpired = FirebaseCloudSyncManager.isEventDateExpired(evtDate, evtTime)
+                                isSameUnit(evtUnit, cleanU) && !isExpired && isDateCoveredByEvent(evtDate, selectedDayNumber, activeMonthName, activeYearNumber)
+                            }.firstOrNull { evt ->
+                                val shape = (evt["shape"] ?: "").lowercase()
+                                !shape.contains("available") || shape.contains("not")
+                            } ?: dbEventsState.value.find { evt ->
+                                val evtDate = evt["date"] ?: ""
+                                val evtUnit = evt["unit"] ?: ""
+                                val evtTime = evt["time"] ?: "12:00 PM"
+                                val isExpired = FirebaseCloudSyncManager.isEventDateExpired(evtDate, evtTime)
+                                isSameUnit(evtUnit, cleanU) && !isExpired && isDateCoveredByEvent(evtDate, selectedDayNumber, activeMonthName, activeYearNumber)
                             }
-                            val rawStatus = matchingEvt?.description?.replace("Category: ", "")?.ifBlank { "Available" } ?: "Available"
-                            val status = rawStatus.ifBlank { "Available" }
+
+                            val status = if (matchingEvt != null) {
+                                val rawShape = (matchingEvt["shape"] ?: "").ifBlank {
+                                    (matchingEvt["title"] ?: "").replace("Staycation - ", "").replace(" Tag", "").trim()
+                                }
+                                when {
+                                    rawShape.contains("Check", ignoreCase = true) || rawShape.contains("Heart", ignoreCase = true) -> "Check-In"
+                                    rawShape.contains("Reserve", ignoreCase = true) || rawShape.contains("Diamond", ignoreCase = true) -> "Reserve"
+                                    rawShape.contains("Maintenance", ignoreCase = true) || rawShape.contains("Circle", ignoreCase = true) -> "Under Maintenance"
+                                    rawShape.contains("Not", ignoreCase = true) || rawShape.contains("Star", ignoreCase = true) || rawShape.contains("Rent", ignoreCase = true) -> "Rented"
+                                    rawShape.contains("Rent", ignoreCase = true) -> "Rented"
+                                    else -> rawShape.ifBlank { "Available" }
+                                }
+                            } else {
+                                "Available"
+                            }
                             val (statusBg, statusTextCol, dotColor) = when {
                                 status.contains("Available", ignoreCase = true) && !status.contains("Not", ignoreCase = true) -> Triple(Color(0xFFE8F5E9), Color(0xFF2E7D32), Color(0xFF00A86B))
                                 status.contains("Check", ignoreCase = true) || status.contains("Heart", ignoreCase = true) -> Triple(Color(0xFFFFEBEE), Color(0xFFC2185B), Color(0xFFE91E63))
@@ -2116,13 +2162,11 @@ fun ProfileTabContent(
                         title = "Email Settings",
                         onClick = { showEmailSettingsDialog = true }
                     )
-                    if (isOwnerMode) {
-                        ProfileMenuItem(
-                            icon = Icons.Default.Palette,
-                            title = "Appearance",
-                            onClick = { showAppearanceDialog = true }
-                        )
-                    }
+                    ProfileMenuItem(
+                        icon = Icons.Default.Palette,
+                        title = "Theme",
+                        onClick = { showAppearanceDialog = true }
+                    )
                 }
             }
 
@@ -2345,7 +2389,7 @@ fun ProfileTabContent(
                     }
                 }
             },
-            containerColor = Color.White,
+            containerColor = CardBg,
             shape = RoundedCornerShape(20.dp)
         )
     }
@@ -2563,7 +2607,7 @@ fun ProfileTabContent(
                     Text("Close", color = TextMuted)
                 }
             },
-            containerColor = Color.White,
+            containerColor = CardBg,
             shape = RoundedCornerShape(20.dp)
         )
     }
@@ -2882,14 +2926,23 @@ fun ProfileTabContent(
     }
 
     if (showAppearanceDialog) {
-        val themeColors = listOf(
-            Triple("Royal Purple", Color(0xFF6A1B9A), "0xFF6A1B9A"),
-            Triple("Ocean Blue", Color(0xFF1976D2), "0xFF1976D2"),
-            Triple("Rose Pink", Color(0xFFC2185B), "0xFFC2185B"),
-            Triple("Emerald Green", Color(0xFF00897B), "0xFF00897B"),
-            Triple("Sunset Amber", Color(0xFFE65100), "0xFFE65100"),
-            Triple("Midnight Dark", Color(0xFF212121), "0xFF212121")
+        val themeModes = listOf(
+            Triple("light", "☀️ Light Mode", "Clean bright UI with soft lavender cards"),
+            Triple("dark", "🌙 Dark Mode", "Deep charcoal purple UI for low-light eyes")
         )
+
+        val themeColors = listOf(
+            Triple("Light Purple", Color(0xFF8E24AA), "0xFF8E24AA"),
+            Triple("Light Blue", Color(0xFF42A5F5), "0xFF42A5F5"),
+            Triple("Light Red", Color(0xFFEF5350), "0xFFEF5350"),
+            Triple("Mint Green", Color(0xFF26A69A), "0xFF26A69A")
+        )
+
+        val dialogContainerBg = if (AzureCalendarColors.isDarkMode) Color(0xFF1E1B26) else Color(0xFFFFFFFF)
+        val dialogHeaderTextColor = if (AzureCalendarColors.isDarkMode) Color(0xFFF3EDFD) else Color(0xFF2C1A36)
+        val dialogSubtextColor = if (AzureCalendarColors.isDarkMode) Color(0xFFD1C4E9) else Color(0xFF7B6287)
+        val cardSurfaceBg = if (AzureCalendarColors.isDarkMode) Color(0xFF2B2336) else Color(0xFFF8F5FE)
+        val cardSelectedBg = if (AzureCalendarColors.isDarkMode) Color(0xFF3D2D52) else Color(0xFFF3EDFD)
 
         AlertDialog(
             onDismissRequest = { showAppearanceDialog = false },
@@ -2901,37 +2954,34 @@ fun ProfileTabContent(
                 ) {
                     Icon(Icons.Default.Palette, contentDescription = null, tint = PurplePrimary, modifier = Modifier.size(22.dp))
                     Text(
-                        text = "Dashboard Appearance",
+                        text = if (isOwnerMode) "Dashboard Appearance" else "Theme",
                         fontSize = 18.sp,
                         fontWeight = FontWeight.Bold,
-                        color = TextDark
+                        color = dialogHeaderTextColor
                     )
                 }
             },
             text = {
                 Column(
                     verticalArrangement = Arrangement.spacedBy(12.dp),
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .verticalScroll(rememberScrollState())
                 ) {
-                    Text("Select your preferred theme color for the Owner Dashboard:", fontSize = 12.sp, color = TextMuted)
+                    Text("Select App Theme Mode:", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = dialogHeaderTextColor)
 
-                    themeColors.forEach { (name, col, hex) ->
-                        val isSelected = selectedColorHex == hex
+                    themeModes.forEach { (modeKey, modeTitle, modeDesc) ->
+                        val isSelectedMode = AzureCalendarColors.currentThemeMode == modeKey
                         Surface(
                             shape = RoundedCornerShape(12.dp),
-                            color = if (isSelected) Color(0xFFF3EDFD) else Color(0xFFF8F5FE),
-                            border = if (isSelected) BorderStroke(1.5.dp, PurplePrimary) else null,
+                            color = if (isSelectedMode) cardSelectedBg else cardSurfaceBg,
+                            border = if (isSelectedMode) BorderStroke(1.5.dp, PurplePrimary) else null,
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clip(RoundedCornerShape(12.dp))
                                 .clickable {
-                                    selectedColorHex = hex
-                                    if (!isPreview) {
-                                        appearancePrefs.edit().putString("theme_color_$agentName", hex).apply()
-                                    }
-                                    AzureCalendarColors.updateThemeColor(hex)
-                                    Toast.makeText(context, "Dashboard theme updated to $name!", Toast.LENGTH_SHORT).show()
-                                    showAppearanceDialog = false
+                                    AzureCalendarColors.setAppThemeMode(context, modeKey)
+                                    Toast.makeText(context, "Theme mode updated to $modeTitle!", Toast.LENGTH_SHORT).show()
                                 }
                         ) {
                             Row(
@@ -2941,21 +2991,64 @@ fun ProfileTabContent(
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(12.dp)
-                                ) {
-                                    Box(
-                                        modifier = Modifier
-                                            .size(24.dp)
-                                            .clip(CircleShape)
-                                            .background(col)
-                                    )
-                                    Text(text = name, fontSize = 14.sp, fontWeight = FontWeight.Bold, color = TextDark)
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(text = modeTitle, fontSize = 14.sp, fontWeight = FontWeight.Bold, color = dialogHeaderTextColor)
+                                    Spacer(modifier = Modifier.height(2.dp))
+                                    Text(text = modeDesc, fontSize = 11.sp, color = dialogSubtextColor)
                                 }
+                                if (isSelectedMode) {
+                                    Text("✓ Selected", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = PurplePrimary)
+                                }
+                            }
+                        }
+                    }
 
-                                if (isSelected) {
-                                    Text("✓ Active", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = PurplePrimary)
+                    if (isOwnerMode) {
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text("Dashboard Accent Color:", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = dialogHeaderTextColor)
+
+                        themeColors.forEach { (name, col, hex) ->
+                            val isSelected = selectedColorHex == hex
+                            Surface(
+                                shape = RoundedCornerShape(12.dp),
+                                color = if (isSelected) cardSelectedBg else cardSurfaceBg,
+                                border = if (isSelected) BorderStroke(1.5.dp, PurplePrimary) else null,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .clickable {
+                                        selectedColorHex = hex
+                                        if (!isPreview) {
+                                            appearancePrefs.edit().putString("theme_color_$agentName", hex).putString("theme_color_Admin", hex).apply()
+                                        }
+                                        AzureCalendarColors.updateThemeColor(hex)
+                                        Toast.makeText(context, "Dashboard theme updated to $name!", Toast.LENGTH_SHORT).show()
+                                        showAppearanceDialog = false
+                                    }
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 14.dp, vertical = 10.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                    ) {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(24.dp)
+                                                .clip(CircleShape)
+                                                .background(col)
+                                        )
+                                        Text(text = name, fontSize = 14.sp, fontWeight = FontWeight.Bold, color = dialogHeaderTextColor)
+                                    }
+
+                                    if (isSelected) {
+                                        Text("✓ Active", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = PurplePrimary)
+                                    }
                                 }
                             }
                         }
@@ -2968,10 +3061,10 @@ fun ProfileTabContent(
                     colors = ButtonDefaults.buttonColors(containerColor = PurplePrimary),
                     shape = RoundedCornerShape(10.dp)
                 ) {
-                    Text("Done", fontWeight = FontWeight.Bold)
+                    Text("Done", fontWeight = FontWeight.Bold, color = Color.White)
                 }
             },
-            containerColor = Color.White,
+            containerColor = dialogContainerBg,
             shape = RoundedCornerShape(20.dp)
         )
     }
