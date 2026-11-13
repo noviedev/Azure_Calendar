@@ -284,35 +284,44 @@ fun UnitsDirectoryScreen(
         }
 
         allUnitsList.map { unitItem ->
-            val matchingEvent = dbEventsState.value.find { evt ->
+            val matchingEvent = dbEventsState.value.filter { evt ->
                 val evtDate = evt["date"] ?: ""
                 val evtTime = evt["time"] ?: "12:00 PM"
                 val evtUnit = evt["unit"] ?: ""
 
-                val evtYear = Regex("\\b20\\d{2}\\b").find(evtDate)?.value?.toIntOrNull()
-                val yearMatches = evtYear == null || evtYear == selectedYearNumber
-
-                val dateMatches = isDateCoveredByEvent(evtDate, selectedDayNumber, shortMonthName, selectedYearNumber)
                 val isExpired = FirebaseCloudSyncManager.isEventDateExpired(evtDate, evtTime)
                 val unitMatches = isSameUnit(evtUnit, unitItem.unitNumber)
+                val dateMatches = isDateCoveredByEvent(evtDate, selectedDayNumber, shortMonthName, selectedYearNumber)
 
-                yearMatches && dateMatches && !isExpired && unitMatches
+                unitMatches && !isExpired && dateMatches
+            }.firstOrNull { evt ->
+                val shape = (evt["shape"] ?: "").lowercase()
+                !shape.contains("available") || shape.contains("not")
+            } ?: dbEventsState.value.find { evt ->
+                val evtDate = evt["date"] ?: ""
+                val evtTime = evt["time"] ?: "12:00 PM"
+                val evtUnit = evt["unit"] ?: ""
+
+                val isExpired = FirebaseCloudSyncManager.isEventDateExpired(evtDate, evtTime)
+                val unitMatches = isSameUnit(evtUnit, unitItem.unitNumber)
+                val dateMatches = isDateCoveredByEvent(evtDate, selectedDayNumber, shortMonthName, selectedYearNumber)
+
+                unitMatches && !isExpired && dateMatches
             }
 
-            val dynamicStatus = when {
-                matchingEvent != null -> {
-                    val shape = matchingEvent["shape"] ?: ""
-                    val title = matchingEvent["title"] ?: ""
-                    val combined = "$shape $title"
-                    when {
-                        combined.contains("Not", ignoreCase = true) || combined.contains("Star", ignoreCase = true) || combined.contains("Rent", ignoreCase = true) -> "Rented"
-                        combined.contains("Check", ignoreCase = true) || combined.contains("Heart", ignoreCase = true) -> "Check-in"
-                        combined.contains("Reserve", ignoreCase = true) || combined.contains("Diamond", ignoreCase = true) -> "Reserved"
-                        combined.contains("Maintenance", ignoreCase = true) || combined.contains("Circle", ignoreCase = true) -> "Under Maintenance"
-                        else -> shape.ifBlank { "Available" }
-                    }
+            val dynamicStatus = if (matchingEvent != null) {
+                val shape = matchingEvent["shape"] ?: ""
+                val title = matchingEvent["title"] ?: ""
+                val combined = "$shape $title"
+                when {
+                    combined.contains("Check", ignoreCase = true) || combined.contains("Heart", ignoreCase = true) -> "Check-in"
+                    combined.contains("Reserve", ignoreCase = true) || combined.contains("Diamond", ignoreCase = true) -> "Reserved"
+                    combined.contains("Maintenance", ignoreCase = true) || combined.contains("Circle", ignoreCase = true) -> "Under Maintenance"
+                    combined.contains("Not", ignoreCase = true) || combined.contains("Star", ignoreCase = true) || combined.contains("Rent", ignoreCase = true) -> "Rented"
+                    else -> shape.ifBlank { "Available" }
                 }
-                else -> unitItem.status.ifBlank { "Available" }
+            } else {
+                unitItem.status.ifBlank { "Available" }
             }
 
             unitItem.copy(status = dynamicStatus)

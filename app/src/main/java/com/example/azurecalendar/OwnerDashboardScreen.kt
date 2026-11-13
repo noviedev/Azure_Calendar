@@ -404,21 +404,26 @@ private fun OwnerCalendarTabContent(
                         Toast.makeText(context, if (isAvailableShape) "Unit $unitName set to Available! Tags cleaned." else "Tag $shape applied to $unitName for $finalTargetDate!", Toast.LENGTH_SHORT).show()
                     }
 
-                    val isNoPriceTag = shape.contains("Reserve", ignoreCase = true) ||
-                            shape.contains("Diamond", ignoreCase = true) ||
-                            shape.contains("Maintenance", ignoreCase = true) ||
-                            shape.contains("Circle", ignoreCase = true)
-                    val (_, calculatedPriceStr) = EmailTemplateHelper.calculateBookingPrice(finalTargetDate, 2500.0)
-                    EmailTemplateHelper.sendBookingEmail(
-                        context = context,
-                        ownerEmail = "owner.azure@gmail.com",
-                        agentEmail = "admin@azure.com",
-                        agentName = "Admin Owner",
-                        unitName = unitName,
-                        statusLabel = shape,
-                        dateText = finalTargetDate,
-                        amountText = if (isNoPriceTag) "" else calculatedPriceStr
-                    )
+                    val notifPrefs = context.getSharedPreferences("azure_calendar_notification_prefs", Context.MODE_PRIVATE)
+                    val isBookingNotifEnabled = notifPrefs.getBoolean("notif_booking_Admin", true)
+
+                    if (isBookingNotifEnabled) {
+                        val isNoPriceTag = shape.contains("Reserve", ignoreCase = true) ||
+                                shape.contains("Diamond", ignoreCase = true) ||
+                                shape.contains("Maintenance", ignoreCase = true) ||
+                                shape.contains("Circle", ignoreCase = true)
+                        val (_, calculatedPriceStr) = EmailTemplateHelper.calculateBookingPrice(finalTargetDate, 2500.0)
+                        EmailTemplateHelper.sendBookingEmail(
+                            context = context,
+                            ownerEmail = "owner.azure@gmail.com",
+                            agentEmail = "admin@azure.com",
+                            agentName = "Admin Owner",
+                            unitName = unitName,
+                            statusLabel = shape,
+                            dateText = finalTargetDate,
+                            amountText = if (isNoPriceTag) "" else calculatedPriceStr
+                        )
+                    }
                 }
             )
         }
@@ -561,10 +566,12 @@ private fun OwnerCalendarTabContent(
                                 else -> Triple(Color(0xFFFFEBEE), Color(0xFFC62828), Color(0xFFE74C3C))
                             }
 
+                            val unitRowBg = if (AzureCalendarColors.isDarkMode) Color(0xFF2A2335) else Color(0xFFF8F5FE)
+
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .background(Color(0xFFF8F5FE), RoundedCornerShape(12.dp))
+                                    .background(unitRowBg, RoundedCornerShape(12.dp))
                                     .padding(horizontal = 12.dp, vertical = 10.dp),
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically
@@ -768,9 +775,12 @@ private fun OwnerDashboardHomeContent(
         }
     }
 
-    val displayAdminName = remember(isPreview) {
+    val sessionManager = remember { UserSessionManager(context) }
+    val displayAdminName = remember(syncVersion, isPreview) {
         if (isPreview) "Admin"
-        else infoPrefs.getString("name_Admin", "Admin") ?: "Admin"
+        else infoPrefs.getString("name_Admin", null)
+            ?: sessionManager.getUsername().takeIf { it.isNotBlank() }
+            ?: "Admin"
     }
 
     var profilePhotoUri by remember {

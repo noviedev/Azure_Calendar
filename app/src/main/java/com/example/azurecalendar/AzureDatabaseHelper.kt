@@ -47,6 +47,7 @@ class AzureDatabaseHelper(context: Context) : SQLiteOpenHelper(context.applicati
         const val COLUMN_AGENT_EMAIL = "email"
         const val COLUMN_AGENT_GENDER = "gender"
         const val COLUMN_AGENT_POSITION = "position"
+        const val COLUMN_AGENT_PASSWORD = "password"
 
         // Chat Messages Table
         const val TABLE_CHAT_MESSAGES = "chat_messages"
@@ -84,7 +85,8 @@ class AzureDatabaseHelper(context: Context) : SQLiteOpenHelper(context.applicati
                 "$COLUMN_AGENT_NAME TEXT, " +
                 "$COLUMN_AGENT_EMAIL TEXT, " +
                 "$COLUMN_AGENT_GENDER TEXT, " +
-                "$COLUMN_AGENT_POSITION TEXT)")
+                "$COLUMN_AGENT_POSITION TEXT, " +
+                "$COLUMN_AGENT_PASSWORD TEXT)")
 
         val createChatTable = ("CREATE TABLE IF NOT EXISTS $TABLE_CHAT_MESSAGES (" +
                 "$COLUMN_CHAT_ID TEXT PRIMARY KEY, " +
@@ -213,6 +215,12 @@ class AzureDatabaseHelper(context: Context) : SQLiteOpenHelper(context.applicati
         }
     }
 
+    private fun ensurePasswordColumn(db: SQLiteDatabase) {
+        try {
+            db.execSQL("ALTER TABLE $TABLE_AGENTS ADD COLUMN $COLUMN_AGENT_PASSWORD TEXT")
+        } catch (_: Exception) {}
+    }
+
     // --- Agents CRUD ---
     fun insertAgent(
         name: String,
@@ -220,9 +228,11 @@ class AzureDatabaseHelper(context: Context) : SQLiteOpenHelper(context.applicati
         phone: String = "",
         role: String = "Property Agent",
         gender: String = "Female",
+        password: String = "",
         syncToCloud: Boolean = true
     ): Long {
         val db = this.writableDatabase
+        ensurePasswordColumn(db)
         if (email.isNotBlank()) {
             db.delete(TABLE_AGENTS, "$COLUMN_AGENT_EMAIL = ?", arrayOf(email))
         }
@@ -235,18 +245,114 @@ class AzureDatabaseHelper(context: Context) : SQLiteOpenHelper(context.applicati
             put(COLUMN_AGENT_EMAIL, email)
             put(COLUMN_AGENT_GENDER, gender)
             put(COLUMN_AGENT_POSITION, role)
+            if (password.isNotBlank()) {
+                put(COLUMN_AGENT_PASSWORD, password)
+            }
         }
         val rowId = db.insert(TABLE_AGENTS, null, values)
 
         if (syncToCloud && name.isNotBlank() && email.isNotBlank()) {
-            FirebaseCloudSyncManager.pushAgentToCloud(name, email, phone, role, gender)
+            FirebaseCloudSyncManager.pushAgentToCloud(name, email, phone, role, gender, password)
         }
         return rowId
+    }
+
+    fun updateAgentProfile(
+        oldName: String,
+        oldEmail: String,
+        newName: String,
+        newEmail: String,
+        phone: String = "",
+        role: String = "Property Agent",
+        gender: String = "Female",
+        password: String = "",
+        syncToCloud: Boolean = true
+    ): Long {
+        val db = this.writableDatabase
+        ensurePasswordColumn(db)
+        if (oldEmail.isNotBlank()) db.delete(TABLE_AGENTS, "$COLUMN_AGENT_EMAIL = ?", arrayOf(oldEmail))
+        if (oldName.isNotBlank()) db.delete(TABLE_AGENTS, "$COLUMN_AGENT_NAME = ?", arrayOf(oldName))
+        if (newEmail.isNotBlank()) db.delete(TABLE_AGENTS, "$COLUMN_AGENT_EMAIL = ?", arrayOf(newEmail))
+        if (newName.isNotBlank()) db.delete(TABLE_AGENTS, "$COLUMN_AGENT_NAME = ?", arrayOf(newName))
+
+        if (syncToCloud && (oldName.isNotBlank() || oldEmail.isNotBlank()) && (oldName != newName || oldEmail != newEmail)) {
+            FirebaseCloudSyncManager.deleteAgentFromCloud(name = oldName, email = oldEmail)
+        }
+
+        val values = ContentValues().apply {
+            put(COLUMN_AGENT_NAME, newName)
+            put(COLUMN_AGENT_EMAIL, newEmail)
+            put(COLUMN_AGENT_GENDER, gender)
+            put(COLUMN_AGENT_POSITION, role)
+            if (password.isNotBlank()) {
+                put(COLUMN_AGENT_PASSWORD, password)
+            }
+        }
+        val rowId = db.insert(TABLE_AGENTS, null, values)
+
+        if (syncToCloud && newName.isNotBlank() && newEmail.isNotBlank()) {
+            FirebaseCloudSyncManager.pushAgentToCloud(newName, newEmail, phone, role, gender, password)
+        }
+        return rowId
+    }
+
+    fun updateAgentPassword(identifier: String, newPass: String, syncToCloud: Boolean = true): Boolean {
+        val cleanId = identifier.trim()
+        if (cleanId.isBlank() || newPass.isBlank()) return false
+        val db = this.writableDatabase
+        ensurePasswordColumn(db)
+
+        val cleanPrefix = cleanId.substringBefore("@").lowercase()
+        val values = ContentValues().apply {
+            put(COLUMN_AGENT_PASSWORD, newPass)
+        }
+
+        val rows = db.update(
+            TABLE_AGENTS,
+            values,
+            "LOWER($COLUMN_AGENT_EMAIL) = ? OR LOWER($COLUMN_AGENT_NAME) = ? OR LOWER($COLUMN_AGENT_EMAIL) LIKE ?",
+            arrayOf(cleanId.lowercase(), cleanId.lowercase(), "$cleanPrefix@%")
+        )
+
+        val isAdmin = cleanId.contains("admin", ignoreCase = true) || cleanId.contains("owner", ignoreCase = true)
+        val name = if (isAdmin) "Admin" else if (!cleanId.contains("@")) cleanId else cleanId.substringBefore("@")
+        val email = if (cleanId.contains("@")) cleanId else "${cleanId.lowercase()}@gmail.com"
+        val role = if (isAdmin) "Property Owner & Admin" else "Property Agent"
+
+        if (rows == 0) {
+            insertAgent(name = name, email = email, phone = "", role = role, gender = "Female", password = newPass, syncToCloud = syncToCloud)
+        } else if (syncToCloud) {
+            FirebaseCloudSyncManager.pushAgentPasswordToCloud(cleanId, newPass)
+        }
+        return true
+    }
+
+    fun getAgentPassword(identifier: String): String? {
+        val cleanId = identifier.trim().lowercase()
+        if (cleanId.isBlank()) return null
+        val db = this.readableDatabase
+        ensurePasswordColumn(db)
+        val cleanPrefix = cleanId.substringBefore("@")
+
+        val cursor = db.rawQuery(
+            "SELECT $COLUMN_AGENT_PASSWORD FROM $TABLE_AGENTS WHERE LOWER($COLUMN_AGENT_EMAIL) = ? OR LOWER($COLUMN_AGENT_NAME) = ? OR LOWER($COLUMN_AGENT_EMAIL) LIKE ? LIMIT 1",
+            arrayOf(cleanId, cleanId, "$cleanPrefix@%")
+        )
+        var pass: String? = null
+        if (cursor.moveToFirst()) {
+            val passIdx = cursor.getColumnIndex(COLUMN_AGENT_PASSWORD)
+            if (passIdx != -1) {
+                pass = cursor.getString(passIdx)
+            }
+        }
+        cursor.close()
+        return if (!pass.isNullOrBlank()) pass else null
     }
 
     fun getAllAgents(): List<Map<String, String>> {
         val list = mutableListOf<Map<String, String>>()
         val db = this.readableDatabase
+        ensurePasswordColumn(db)
         val cursor = db.rawQuery("SELECT * FROM $TABLE_AGENTS", null)
         val sampleEmails = setOf("alex.reyes@azure.com", "apple.u@azure.com", "john.dc@azure.com", "maria.santos@azure.com", "elena.r@azure.com")
 
@@ -257,6 +363,7 @@ class AzureDatabaseHelper(context: Context) : SQLiteOpenHelper(context.applicati
                 val emailIdx = cursor.getColumnIndex(COLUMN_AGENT_EMAIL)
                 val genderIdx = cursor.getColumnIndex(COLUMN_AGENT_GENDER)
                 val posIdx = cursor.getColumnIndex(COLUMN_AGENT_POSITION)
+                val passIdx = cursor.getColumnIndex(COLUMN_AGENT_PASSWORD)
 
                 val emailStr = if (emailIdx != -1) cursor.getString(emailIdx) ?: "" else ""
                 if (emailStr.lowercase() in sampleEmails) continue
@@ -266,7 +373,8 @@ class AzureDatabaseHelper(context: Context) : SQLiteOpenHelper(context.applicati
                     "name" to if (nameIdx != -1) cursor.getString(nameIdx) ?: "" else "",
                     "email" to emailStr,
                     "gender" to if (genderIdx != -1) cursor.getString(genderIdx) ?: "" else "",
-                    "position" to if (posIdx != -1) cursor.getString(posIdx) ?: "" else ""
+                    "position" to if (posIdx != -1) cursor.getString(posIdx) ?: "" else "",
+                    "password" to if (passIdx != -1) cursor.getString(passIdx) ?: "" else ""
                 )
                 list.add(agent)
             } while (cursor.moveToNext())
@@ -637,15 +745,7 @@ class AzureDatabaseHelper(context: Context) : SQLiteOpenHelper(context.applicati
         val rawFinalImage = imageUri.ifBlank { existingImageUri }
         val finalImageUri = if (rawFinalImage.isNotBlank()) rawFinalImage else ""
 
-        val finalStatus = if (!syncToCloud && status == "Available" && existingStatus.isNotBlank() && existingStatus != "Available") {
-            existingStatus
-        } else if (status.isNotBlank()) {
-            status
-        } else if (existingStatus.isNotBlank()) {
-            existingStatus
-        } else {
-            "Available"
-        }
+        val finalStatus = if (status.isNotBlank()) status else existingStatus.ifBlank { "Available" }
 
         db.delete(
             TABLE_UNITS,

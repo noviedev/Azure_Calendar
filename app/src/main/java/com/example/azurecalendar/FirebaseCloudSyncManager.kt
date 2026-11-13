@@ -700,31 +700,66 @@ object FirebaseCloudSyncManager {
         }
     }
 
-    fun pushAgentToCloud(name: String, email: String, phone: String, role: String, gender: String) {
-        ensureAuthBeforeCloudAction {
-            try {
-                val db = FirebaseFirestore.getInstance()
-                val agentData = mapOf(
-                    "name" to name,
-                    "email" to email,
-                    "phone" to phone,
-                    "role" to role,
-                    "gender" to gender,
-                    "updatedAt" to System.currentTimeMillis()
-                )
-                val docKey = sanitizeDocId(email.ifBlank { name }.lowercase())
-                db.collection("agents").document(docKey)
-                    .set(agentData, SetOptions.merge())
-                    .addOnSuccessListener {
-                        Log.d(TAG, "Agent $name ($email) synced to Cloud Firestore!")
-                        notifyCloudUpdate()
-                    }
-                    .addOnFailureListener { e ->
-                        Log.e(TAG, "Agent cloud push failed: ${e.message}")
-                    }
-            } catch (e: Exception) {
-                Log.e(TAG, "Agent push error: ${e.message}")
+    fun pushAgentToCloud(name: String, email: String, phone: String, role: String, gender: String, password: String = "") {
+        notifyCloudUpdate()
+
+        try {
+            val db = FirebaseFirestore.getInstance()
+            val agentData = mutableMapOf<String, Any>(
+                "name" to name,
+                "email" to email,
+                "phone" to phone,
+                "role" to role,
+                "gender" to gender,
+                "updatedAt" to System.currentTimeMillis()
+            )
+            if (password.isNotBlank()) {
+                agentData["password"] = password
             }
+            val docKey = sanitizeDocId(email.ifBlank { name }.lowercase())
+            val cleanEmail = email.trim().lowercase()
+
+            // Delete stale deletion markers if active agent profile is pushed
+            db.collection("deleted_agents").document(docKey).delete()
+            if (cleanEmail.isNotBlank()) {
+                db.collection("deleted_agents").document(cleanEmail).delete()
+            }
+
+            db.collection("agents").document(docKey)
+                .set(agentData, SetOptions.merge())
+                .addOnSuccessListener {
+                    Log.d(TAG, "Agent $name ($email) synced to Cloud Firestore!")
+                    notifyCloudUpdate()
+                }
+                .addOnFailureListener { e ->
+                    Log.e(TAG, "Agent cloud push failed: ${e.message}")
+                }
+        } catch (e: Exception) {
+            Log.e(TAG, "Agent push error: ${e.message}")
+        }
+    }
+
+    fun pushAgentPasswordToCloud(identifier: String, newPass: String) {
+        if (identifier.isBlank() || newPass.isBlank()) return
+        notifyCloudUpdate()
+
+        try {
+            val db = FirebaseFirestore.getInstance()
+            val cleanId = identifier.trim().lowercase()
+            val docKey = sanitizeDocId(cleanId)
+            val passData = mapOf(
+                "password" to newPass,
+                "passwordUpdatedAt" to System.currentTimeMillis()
+            )
+
+            db.collection("agents").document(docKey)
+                .set(passData, SetOptions.merge())
+                .addOnSuccessListener {
+                    Log.d(TAG, "Password for $identifier updated in Cloud Firestore!")
+                    notifyCloudUpdate()
+                }
+        } catch (e: Exception) {
+            Log.e(TAG, "Push password error: ${e.message}")
         }
     }
 
@@ -964,7 +999,8 @@ object FirebaseCloudSyncManager {
                     if (e != null) return@addSnapshotListener
                     if (snapshots != null && !snapshots.isEmpty) {
                         val deletedPrefs = appContext.getSharedPreferences("azure_calendar_deleted_agents", Context.MODE_PRIVATE)
-                        val currentDeletedSet = deletedPrefs.getStringSet("deleted_agent_keys", emptySet()).orEmpty()
+                        val currentDeletedSet = deletedPrefs.getStringSet("deleted_agent_keys", emptySet()).orEmpty().toMutableSet()
+                        var deletedSetChanged = false
 
                         for (doc in snapshots.documents) {
                             val aName = doc.getString("name") ?: ""
@@ -972,13 +1008,31 @@ object FirebaseCloudSyncManager {
                             val aPhone = doc.getString("phone") ?: ""
                             val aRole = doc.getString("role") ?: "Property Agent"
                             val aGender = doc.getString("gender") ?: "Female"
+                            val aPassword = doc.getString("password") ?: ""
 
-                            val isDeleted = currentDeletedSet.contains(aEmail.trim().lowercase()) ||
-                                    currentDeletedSet.contains(aName.trim().lowercase())
+                            val cleanEmail = aEmail.trim().lowercase()
+                            val cleanName = aName.trim().lowercase()
+                            val cleanPrefix = cleanEmail.substringBefore("@")
 
-                            if (aName.isNotBlank() && aEmail.isNotBlank() && !isDeleted) {
-                                dbHelper.insertAgent(aName, aEmail, aPhone, aRole, aGender, syncToCloud = false)
+                            if (aName.isNotBlank() && aEmail.isNotBlank()) {
+                                if (currentDeletedSet.remove(cleanEmail) || currentDeletedSet.remove(cleanName)) {
+                                    deletedSetChanged = true
+                                }
+                                dbHelper.insertAgent(aName, aEmail, aPhone, aRole, aGender, password = aPassword, syncToCloud = false)
+
+                                if (aPassword.isNotBlank()) {
+                                    val secPrefs = appContext.getSharedPreferences("azure_calendar_security_info", Context.MODE_PRIVATE)
+                                    secPrefs.edit()
+                                        .putString("password_$cleanEmail", aPassword)
+                                        .putString("password_$cleanName", aPassword)
+                                        .putString("password_$cleanPrefix", aPassword)
+                                        .apply()
+                                }
                             }
+                        }
+
+                        if (deletedSetChanged) {
+                            deletedPrefs.edit().putStringSet("deleted_agent_keys", currentDeletedSet).apply()
                         }
                         notifyCloudUpdate()
                         onSyncTriggered()
@@ -1461,6 +1515,15 @@ object FirebaseCloudSyncManager {
                                 isSelf = false,
                                 createdTime = createdTime
                             )
+
+                            // Un-read marker for other users so unread badge shows
+                            val chatPrefs = context.applicationContext.getSharedPreferences("azure_calendar_chat_reads", Context.MODE_PRIVATE)
+                            val allUsers = listOf("Admin Owner", "Alex Reyes", "sungit", "novie", "Gilbert", "Agent", "Chione Udtohan", "Claire Delgado", "Cris")
+                            val editor = chatPrefs.edit()
+                            allUsers.filter { !it.equals(senderName, ignoreCase = true) }.forEach { otherUser ->
+                                editor.putBoolean("read_all_${cleanEventRoomId}_$otherUser", false)
+                            }
+                            editor.apply()
                         }
                     }
 

@@ -38,6 +38,11 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import android.graphics.BitmapFactory
+import android.util.Base64
+import androidx.compose.foundation.Image
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import com.example.azurecalendar.ui.theme.AzureCalendarTheme
 
 private val PurplePrimary get() = AzureCalendarColors.PurplePrimary
@@ -357,10 +362,7 @@ fun NotificationsCenterScreen(
                 val currentReadCount = remember(chatRoomId, totalRoomMessages, FirebaseCloudSyncManager.globalCloudSyncTrigger.intValue) {
                     chatPrefs.getInt("read_count_${chatRoomId}_$userNameKey", 0)
                 }
-                val isChatRead = remember(chatRoomId, totalRoomMessages, FirebaseCloudSyncManager.globalCloudSyncTrigger.intValue) {
-                    chatPrefs.getBoolean("read_all_${chatRoomId}_$userNameKey", false)
-                }
-                val unreadChatMsgCount = if (isChatRead || currentReadCount >= totalRoomMessages) 0 else (totalRoomMessages - currentReadCount).coerceAtLeast(0)
+                val unreadChatMsgCount = (totalRoomMessages - currentReadCount).coerceAtLeast(0)
 
                 Card(
                     shape = RoundedCornerShape(16.dp),
@@ -374,8 +376,7 @@ fun NotificationsCenterScreen(
                             val sPrefs = context.getSharedPreferences("azure_calendar_event_reads", Context.MODE_PRIVATE)
 
                             cPrefs.edit()
-                                .putInt("read_count_${chatRoomId}_$userName", maxOf(totalRoomMessages, 99999))
-                                .putBoolean("read_all_${chatRoomId}_$userName", true)
+                                .putInt("read_count_${chatRoomId}_$userName", totalRoomMessages)
                                 .apply()
                             sPrefs.edit()
                                 .putBoolean("seen_event_${event.id}_$userName", true)
@@ -466,8 +467,7 @@ fun NotificationsCenterScreen(
                                 val sPrefs = context.getSharedPreferences("azure_calendar_event_reads", Context.MODE_PRIVATE)
 
                                 cPrefs.edit()
-                                    .putInt("read_count_${chatRoomId}_$userName", maxOf(totalRoomMessages, 99999))
-                                    .putBoolean("read_all_${chatRoomId}_$userName", true)
+                                    .putInt("read_count_${chatRoomId}_$userName", totalRoomMessages)
                                     .apply()
                                 sPrefs.edit()
                                     .putBoolean("seen_event_${event.id}_$userName", true)
@@ -496,15 +496,24 @@ fun NotificationsCenterScreen(
                                 )
                                 if (unreadChatMsgCount > 0) {
                                     Spacer(modifier = Modifier.width(8.dp))
-                                    Badge(
-                                        containerColor = Color(0xFFE53935),
-                                        contentColor = Color.White
+                                    Surface(
+                                        shape = CircleShape,
+                                        color = Color.White,
+                                        shadowElevation = 3.dp,
+                                        border = BorderStroke(1.dp, Color(0xFFE53935)),
+                                        modifier = Modifier.size(20.dp)
                                     ) {
-                                        Text(
-                                            text = "$unreadChatMsgCount New",
-                                            fontSize = 10.sp,
-                                            fontWeight = FontWeight.Bold
-                                        )
+                                        Box(
+                                            contentAlignment = Alignment.Center,
+                                            modifier = Modifier.fillMaxSize()
+                                        ) {
+                                            Text(
+                                                text = unreadChatMsgCount.toString(),
+                                                fontSize = 11.sp,
+                                                fontWeight = FontWeight.ExtraBold,
+                                                color = Color(0xFFE53935)
+                                            )
+                                        }
                                     }
                                 }
                             }
@@ -652,7 +661,7 @@ fun NotificationsCenterScreen(
                     Text("Cancel", color = TextMuted)
                 }
             },
-            containerColor = Color.White,
+            containerColor = CardBg,
             shape = RoundedCornerShape(20.dp)
         )
     }
@@ -927,7 +936,7 @@ fun NotificationsCenterScreen(
                     Text("Cancel", color = TextMuted)
                 }
             },
-            containerColor = Color.White,
+            containerColor = CardBg,
             shape = RoundedCornerShape(20.dp)
         )
     }
@@ -1034,10 +1043,8 @@ fun EventGroupChatView(
         val chatPrefs = context.getSharedPreferences("azure_calendar_chat_reads", Context.MODE_PRIVATE)
         val seenPrefs = context.getSharedPreferences("azure_calendar_event_reads", Context.MODE_PRIVATE)
 
-        val totalMsgs = maxOf(displayMessages.size, 1)
         chatPrefs.edit()
-            .putInt("read_count_${chatRoomId}_$userName", totalMsgs)
-            .putBoolean("read_all_${chatRoomId}_$userName", true)
+            .putInt("read_count_${chatRoomId}_$userName", displayMessages.size)
             .apply()
         seenPrefs.edit()
             .putBoolean("seen_event_${event.id}_$userName", true)
@@ -1189,20 +1196,6 @@ fun EventGroupChatView(
                     Spacer(modifier = Modifier.height(2.dp))
 
                     if (isImageMsg) {
-                        val imageModel: Any? = when {
-                            rawImagePayload.isBlank() -> null
-                            rawImagePayload.startsWith("data:image", ignoreCase = true) -> rawImagePayload
-                            rawImagePayload.startsWith("file://", ignoreCase = true) -> {
-                                val path = android.net.Uri.parse(rawImagePayload).path ?: rawImagePayload.substringAfter("file://")
-                                val f = java.io.File(path)
-                                if (f.exists()) f else null
-                            }
-                            rawImagePayload.startsWith("content://", ignoreCase = true) || rawImagePayload.startsWith("http", ignoreCase = true) -> rawImagePayload
-                            else -> {
-                                val f = java.io.File(rawImagePayload)
-                                if (f.exists()) f else null
-                            }
-                        }
 
                         Surface(
                             shape = RoundedCornerShape(16.dp),
@@ -1212,24 +1205,13 @@ fun EventGroupChatView(
                             modifier = Modifier.widthIn(max = 240.dp)
                         ) {
                             Column(modifier = Modifier.padding(6.dp)) {
-                                if (imageModel != null) {
-                                    coil.compose.AsyncImage(
-                                        model = imageModel,
-                                        contentDescription = "Chat Photo",
-                                        contentScale = androidx.compose.ui.layout.ContentScale.Crop,
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .height(170.dp)
-                                            .clip(RoundedCornerShape(12.dp))
-                                    )
-                                } else {
-                                    Text(
-                                        text = "[Photo]",
-                                        fontSize = 13.sp,
-                                        color = if (isMe) Color.White else TextDark,
-                                        modifier = Modifier.padding(8.dp)
-                                    )
-                                }
+                                ChatImageBubble(
+                                    rawImagePayload = rawImagePayload,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(180.dp)
+                                        .clip(RoundedCornerShape(12.dp))
+                                )
                                 Spacer(modifier = Modifier.height(4.dp))
                                 Text(
                                     text = msg.timestamp,
@@ -1306,6 +1288,9 @@ fun EventGroupChatView(
                     )
                 }
 
+                val inputBgColor = if (AzureCalendarColors.isDarkMode) Color(0xFF2A2335) else CardBg
+                val inputTextColor = if (AzureCalendarColors.isDarkMode) Color(0xFFFFFFFF) else TextDark
+
                 OutlinedTextField(
                     value = messageInput,
                     onValueChange = { messageInput = it },
@@ -1313,8 +1298,13 @@ fun EventGroupChatView(
                     singleLine = true,
                     shape = RoundedCornerShape(24.dp),
                     colors = OutlinedTextFieldDefaults.colors(
+                        focusedTextColor = inputTextColor,
+                        unfocusedTextColor = inputTextColor,
+                        focusedContainerColor = inputBgColor,
+                        unfocusedContainerColor = inputBgColor,
                         focusedBorderColor = PurplePrimary,
-                        unfocusedBorderColor = BorderPurple
+                        unfocusedBorderColor = BorderPurple,
+                        cursorColor = PurplePrimary
                     ),
                     modifier = Modifier.weight(1f)
                 )
@@ -1439,9 +1429,85 @@ fun EventGroupChatView(
                     Text("Stay in Meeting", color = PurplePrimary)
                 }
             },
-            containerColor = Color.White,
+            containerColor = CardBg,
             shape = RoundedCornerShape(20.dp)
         )
+    }
+}
+
+@Composable
+fun ChatImageBubble(
+    rawImagePayload: String,
+    modifier: Modifier = Modifier
+) {
+    val context = LocalContext.current
+    val bitmap = remember(rawImagePayload) {
+        val raw = rawImagePayload.trim()
+        if (raw.isBlank()) return@remember null
+
+        try {
+            val isBase64 = raw.contains("base64,", ignoreCase = true) ||
+                    raw.startsWith("data:image", ignoreCase = true) ||
+                    raw.startsWith("/9j/", ignoreCase = true) ||
+                    raw.startsWith("iVBORw0KG", ignoreCase = true) ||
+                    raw.length > 100
+
+            if (isBase64) {
+                val base64Part = if (raw.contains("base64,", ignoreCase = true)) {
+                    raw.substringAfter("base64,").trim()
+                } else if (raw.startsWith("data:image", ignoreCase = true)) {
+                    raw.substringAfter(";").substringAfter(",").trim()
+                } else {
+                    raw.trim()
+                }.replace("\\s+".toRegex(), "")
+
+                val bytes = try {
+                    Base64.decode(base64Part, Base64.NO_WRAP)
+                } catch (_: Exception) {
+                    try {
+                        Base64.decode(base64Part, Base64.DEFAULT)
+                    } catch (_: Exception) {
+                        Base64.decode(base64Part, Base64.URL_SAFE)
+                    }
+                }
+                BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+            } else if (raw.startsWith("file://", ignoreCase = true) || raw.startsWith("/data/", ignoreCase = true)) {
+                val cleanPath = if (raw.startsWith("file://", ignoreCase = true)) Uri.parse(raw).path ?: raw.substringAfter("file://") else raw
+                val file = java.io.File(cleanPath)
+                if (file.exists() && file.length() > 0) {
+                    BitmapFactory.decodeFile(file.absolutePath)
+                } else null
+            } else if (raw.startsWith("content://", ignoreCase = true)) {
+                context.contentResolver.openInputStream(Uri.parse(raw))?.use { stream ->
+                    BitmapFactory.decodeStream(stream)
+                }
+            } else {
+                null
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    if (bitmap != null) {
+        Image(
+            bitmap = bitmap.asImageBitmap(),
+            contentDescription = "Chat Photo Attachment",
+            contentScale = ContentScale.Crop,
+            modifier = modifier
+        )
+    } else {
+        Box(
+            modifier = modifier.background(Color.Gray.copy(alpha = 0.2f)),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = Icons.Default.Image,
+                contentDescription = "Photo Placeholder",
+                tint = Color.Gray,
+                modifier = Modifier.size(32.dp)
+            )
+        }
     }
 }
 

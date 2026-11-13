@@ -142,8 +142,9 @@ object EmailTemplateHelper {
         dateText: String = "Sept 11, 2026",
         amountText: String = "₱2,500.00"
     ) {
-        // Only the default owner email will be the recipient for tag status updates
-        val combinedRecipients = getOwnerEmails(context, ownerEmail).toTypedArray()
+        // Send email notifications to all registered agents and owners who booked/reserved units
+        val allRecipientsList = (getAllRegisteredEmails(context) + listOf(ownerEmail, agentEmail)).filter { it.contains("@") }.distinct()
+        val combinedRecipients = allRecipientsList.toTypedArray()
 
         // Reserved and Under Maintenance tags DO NOT include price in email templates (for both Agents and Owners)!
         val isNonPricedStatus = statusLabel.contains("Reserve", ignoreCase = true) ||

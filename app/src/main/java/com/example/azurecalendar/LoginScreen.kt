@@ -504,8 +504,20 @@ fun LoginScreen(
                             } else {
                                 val isAdmin = resetEmailInput.contains("admin", ignoreCase = true) || resetEmailInput.contains("owner", ignoreCase = true)
                                 val targetUserKey = if (isAdmin) "Admin" else resetEmailInput.substringBefore("@").lowercase()
+                                val cleanEmail = resetEmailInput.trim().lowercase()
 
-                                securityPrefs.edit().putString("password_$targetUserKey", resetNewPassword).apply()
+                                securityPrefs.edit()
+                                    .putString("password_$targetUserKey", resetNewPassword)
+                                    .putString("password_$cleanEmail", resetNewPassword)
+                                    .putString("password_${cleanEmail.substringBefore("@")}", resetNewPassword)
+                                    .apply()
+
+                                val dbHelper = AzureDatabaseHelper(context)
+                                dbHelper.updateAgentPassword(targetUserKey, resetNewPassword, syncToCloud = true)
+                                dbHelper.updateAgentPassword(cleanEmail, resetNewPassword, syncToCloud = true)
+
+                                FirebaseCloudSyncManager.pushAgentPasswordToCloud(targetUserKey, resetNewPassword)
+                                FirebaseCloudSyncManager.pushAgentPasswordToCloud(cleanEmail, resetNewPassword)
 
                                 try {
                                     com.google.firebase.auth.FirebaseAuth.getInstance().sendPasswordResetEmail(resetEmailInput)

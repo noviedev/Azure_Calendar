@@ -296,7 +296,8 @@ fun AddEditUnitScreen(
 
         // Unit Status / Remark Dropdown
         var statusDropdownExpanded by remember { mutableStateOf(false) }
-        val statusOptions = listOf("Available", "Rented (6+ Months Lease)", "Under Maintenance", "Reserved")
+        var showRentedContractDialog by remember { mutableStateOf(false) }
+        val statusOptions = listOf("Available", "Rented", "Under Maintenance", "Reserved")
 
         Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text(text = "Unit Status / Remark", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = TextDark)
@@ -325,11 +326,94 @@ fun AddEditUnitScreen(
                             onClick = {
                                 selectedStatus = option
                                 statusDropdownExpanded = false
+                                if (option == "Rented") {
+                                    showRentedContractDialog = true
+                                }
                             }
                         )
                     }
                 }
             }
+        }
+
+        if (showRentedContractDialog) {
+            val contractOptions = listOf(
+                Pair("6 Months Contract", "6 Months Lease Contract"),
+                Pair("1 Year Contract", "1 Year Lease Contract")
+            )
+
+            AlertDialog(
+                onDismissRequest = { showRentedContractDialog = false },
+                title = {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(Icons.Default.CameraAlt, contentDescription = null, tint = PurplePrimary, modifier = Modifier.size(22.dp))
+                        Text("Lease Contract Duration", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = TextDark)
+                    }
+                },
+                text = {
+                    Column(
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Select contract length for this rented unit:", fontSize = 12.sp, color = TextMuted)
+
+                        contractOptions.forEach { (optionName, optionDesc) ->
+                            val isSelected = selectedStatus.contains(optionName, ignoreCase = true)
+                            Surface(
+                                shape = RoundedCornerShape(12.dp),
+                                color = if (isSelected) Color(0xFFF3EDFD) else Color(0xFFF8F5FE),
+                                border = if (isSelected) BorderStroke(1.5.dp, PurplePrimary) else BorderStroke(1.dp, Color(0xFFE2D6F5)),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .clickable {
+                                        selectedStatus = "Rented ($optionName)"
+                                        showRentedContractDialog = false
+                                    }
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 14.dp, vertical = 12.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column {
+                                        Text(text = optionName, fontSize = 14.sp, fontWeight = FontWeight.Bold, color = TextDark)
+                                        Spacer(modifier = Modifier.height(2.dp))
+                                        Text(text = optionDesc, fontSize = 11.sp, color = TextMuted)
+                                    }
+                                    if (isSelected) {
+                                        Text("✓ Selected", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = PurplePrimary)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                confirmButton = {
+                    Button(
+                        onClick = { showRentedContractDialog = false },
+                        colors = ButtonDefaults.buttonColors(containerColor = PurplePrimary),
+                        shape = RoundedCornerShape(10.dp)
+                    ) {
+                        Text("OK", fontWeight = FontWeight.Bold)
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = {
+                        selectedStatus = "Rented"
+                        showRentedContractDialog = false
+                    }) {
+                        Text("Cancel", color = TextMuted)
+                    }
+                },
+                containerColor = Color.White,
+                shape = RoundedCornerShape(20.dp)
+            )
         }
 
         // Billing Rate / Invoice Price Field

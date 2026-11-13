@@ -58,7 +58,7 @@ class MainActivity : FragmentActivity() {
         val initialScreen = when {
             savedRole.equals("Owner", ignoreCase = true) || savedRole.equals("Admin", ignoreCase = true) -> "owner_dashboard"
             !savedRole.isNullOrBlank() -> "agent_dashboard"
-            else -> "splash"
+            else -> "first_splash"
         }
         val initialUsername = sessionManager.getUsername()
 
@@ -143,6 +143,10 @@ class MainActivity : FragmentActivity() {
 
             Surface {
                 when (currentScreen) {
+                    "first_splash" -> FirstSplashScreen(
+                        onSplashComplete = { currentScreen = "splash" }
+                    )
+
                     "splash" -> SplashScreen(
                         onSplashComplete = { currentScreen = "landing" }
                     )
@@ -174,8 +178,11 @@ class MainActivity : FragmentActivity() {
                                 val deletedSet = deletedPrefs.getStringSet("deleted_agent_keys", emptySet()).orEmpty()
 
                                 val savedAdminEmail = infoPrefs.getString("email_Admin", "admin@azure.com") ?: "admin@azure.com"
+                                val savedAdminEmail2 = securityPrefs.getString("email_Admin", savedAdminEmail) ?: savedAdminEmail
 
                                 val isAdminUser = cleanEmail.equals(savedAdminEmail, ignoreCase = true) ||
+                                        cleanEmail.equals(savedAdminEmail2, ignoreCase = true) ||
+                                        cleanEmail.equals("admin@gmail.com", ignoreCase = true) ||
                                         cleanEmail.contains("admin", ignoreCase = true) ||
                                         cleanEmail.contains("owner", ignoreCase = true)
                                 val userKey = if (isAdminUser) "Admin" else cleanEmail.substringBefore("@").lowercase()
@@ -191,6 +198,10 @@ class MainActivity : FragmentActivity() {
                                 } else {
                                     val defaultPass = if (isAdminUser) "novie1109" else "123456"
                                     val savedPassword = securityPrefs.getString("password_$userKey", null)
+                                        ?: securityPrefs.getString("password_$cleanEmail", null)
+                                        ?: securityPrefs.getString("password_${cleanEmail.substringBefore("@").lowercase()}", null)
+                                        ?: dbHelper.getAgentPassword(cleanEmail)
+                                        ?: dbHelper.getAgentPassword(userKey)
 
                                     val completeLogin = {
                                         val role = if (isAdminUser) "Owner" else "Agent"
@@ -205,9 +216,15 @@ class MainActivity : FragmentActivity() {
                                             Toast.makeText(context, "This agent account has been permanently deleted by the Property Owner. Login access is revoked.", Toast.LENGTH_LONG).show()
                                         } else {
                                             if (!isAdminUser && matchedAgent == null) {
-                                                dbHelper.insertAgent(name, cleanEmail, "", role, "Female")
-                                                FirebaseCloudSyncManager.pushAgentToCloud(name, cleanEmail, "", role, "Female")
+                                                dbHelper.insertAgent(name, cleanEmail, "", role, "Female", password = cleanPassword)
+                                                FirebaseCloudSyncManager.pushAgentToCloud(name, cleanEmail, "", role, "Female", password = cleanPassword)
                                             }
+
+                                            securityPrefs.edit()
+                                                .putString("password_$userKey", cleanPassword)
+                                                .putString("password_$cleanEmail", cleanPassword)
+                                                .apply()
+                                            dbHelper.updateAgentPassword(cleanEmail, cleanPassword, syncToCloud = false)
 
                                             sessionManager.saveSession(name, role)
                                             registeredAgentName = name
@@ -224,6 +241,7 @@ class MainActivity : FragmentActivity() {
                                             .addOnCompleteListener { task ->
                                                 if (task.isSuccessful) {
                                                     securityPrefs.edit().putString("password_$userKey", cleanPassword).apply()
+                                                    dbHelper.updateAgentPassword(cleanEmail, cleanPassword, syncToCloud = false)
                                                     completeLogin()
                                                 } else {
                                                     Toast.makeText(context, "Incorrect email or password!", Toast.LENGTH_SHORT).show()

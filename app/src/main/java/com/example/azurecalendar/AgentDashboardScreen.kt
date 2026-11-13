@@ -47,6 +47,7 @@ private val ScreenBg get() = AzureCalendarColors.ScreenBg
 private val CardBg get() = AzureCalendarColors.CardBg
 private val TextDark get() = AzureCalendarColors.TextDark
 private val TextMuted get() = AzureCalendarColors.TextMuted
+private val BorderPurple get() = AzureCalendarColors.BorderPurple
 
 data class AgentMetricsData(
     val available: String = "0",
@@ -846,9 +847,13 @@ private fun HomeDashboardContent(
     }
 
     val infoPrefs = remember { context.getSharedPreferences("azure_calendar_personal_info", Context.MODE_PRIVATE) }
-    val displayHeaderName = remember(agentName, isPreview) {
+    val sessionManager = remember { UserSessionManager(context) }
+    val displayHeaderName = remember(agentName, syncVersion, isPreview) {
         if (isPreview) agentName
-        else infoPrefs.getString("name_$agentName", infoPrefs.getString("name_Admin", agentName)) ?: agentName
+        else infoPrefs.getString("name_$agentName", null)
+            ?: infoPrefs.getString("name_Admin", null)
+            ?: sessionManager.getUsername().takeIf { it.isNotBlank() }
+            ?: agentName
     }
 
     Column(
@@ -1427,21 +1432,26 @@ private fun CalendarTabContent(
                         Toast.makeText(context, if (isAvailableShape) "Unit $unitName set to Available! Tags cleaned." else "Tag $shape applied to $unitName for $finalTargetDate!", Toast.LENGTH_SHORT).show()
                     }
 
-                    val isNoPriceTag = shape.contains("Reserve", ignoreCase = true) ||
-                            shape.contains("Diamond", ignoreCase = true) ||
-                            shape.contains("Maintenance", ignoreCase = true) ||
-                            shape.contains("Circle", ignoreCase = true)
-                    val (_, calculatedPriceStr) = EmailTemplateHelper.calculateBookingPrice(finalTargetDate, 2500.0)
-                    EmailTemplateHelper.sendBookingEmail(
-                        context = context,
-                        ownerEmail = "owner.azure@gmail.com",
-                        agentEmail = "${agentName.lowercase().replace(" ", ".")}@gmail.com",
-                        agentName = agentName,
-                        unitName = unitName,
-                        statusLabel = shape,
-                        dateText = finalTargetDate,
-                        amountText = if (isNoPriceTag) "" else calculatedPriceStr
-                    )
+                    val notifPrefs = context.getSharedPreferences("azure_calendar_notification_prefs", Context.MODE_PRIVATE)
+                    val isBookingNotifEnabled = notifPrefs.getBoolean("notif_booking_$agentName", true)
+
+                    if (isBookingNotifEnabled) {
+                        val isNoPriceTag = shape.contains("Reserve", ignoreCase = true) ||
+                                shape.contains("Diamond", ignoreCase = true) ||
+                                shape.contains("Maintenance", ignoreCase = true) ||
+                                shape.contains("Circle", ignoreCase = true)
+                        val (_, calculatedPriceStr) = EmailTemplateHelper.calculateBookingPrice(finalTargetDate, 2500.0)
+                        EmailTemplateHelper.sendBookingEmail(
+                            context = context,
+                            ownerEmail = "owner.azure@gmail.com",
+                            agentEmail = "${agentName.lowercase().replace(" ", ".")}@gmail.com",
+                            agentName = agentName,
+                            unitName = unitName,
+                            statusLabel = shape,
+                            dateText = finalTargetDate,
+                            amountText = if (isNoPriceTag) "" else calculatedPriceStr
+                        )
+                    }
                 }
             )
         }
@@ -1562,10 +1572,12 @@ private fun CalendarTabContent(
                                 else -> Triple(Color(0xFFFFEBEE), Color(0xFFC62828), Color(0xFFE74C3C))
                             }
 
+                            val unitRowBg = if (AzureCalendarColors.isDarkMode) Color(0xFF2A2335) else Color(0xFFF8F5FE)
+
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .background(Color(0xFFF8F5FE), RoundedCornerShape(12.dp))
+                                    .background(unitRowBg, RoundedCornerShape(12.dp))
                                     .padding(horizontal = 12.dp, vertical = 10.dp),
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically
@@ -2257,7 +2269,7 @@ fun ProfileTabContent(
 
                         Surface(
                             shape = RoundedCornerShape(12.dp),
-                            color = Color(0xFFF8F5FE),
+                            color = if (AzureCalendarColors.isDarkMode) Color(0xFF2A2335) else Color(0xFFF8F5FE),
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             Column(
@@ -2278,12 +2290,23 @@ fun ProfileTabContent(
                     } else {
                         Text("Edit your account details below:", fontSize = 12.sp, color = TextMuted)
 
+                        val dialogFieldColors = OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = if (AzureCalendarColors.isDarkMode) Color.White else TextDark,
+                            unfocusedTextColor = if (AzureCalendarColors.isDarkMode) Color.White else TextDark,
+                            focusedContainerColor = if (AzureCalendarColors.isDarkMode) Color(0xFF2A2335) else CardBg,
+                            unfocusedContainerColor = if (AzureCalendarColors.isDarkMode) Color(0xFF2A2335) else CardBg,
+                            focusedBorderColor = PurplePrimary,
+                            unfocusedBorderColor = BorderPurple,
+                            cursorColor = PurplePrimary
+                        )
+
                         OutlinedTextField(
                             value = fullNameState,
                             onValueChange = { fullNameState = it },
                             label = { Text("Full Name") },
                             singleLine = true,
                             shape = RoundedCornerShape(10.dp),
+                            colors = dialogFieldColors,
                             modifier = Modifier.fillMaxWidth()
                         )
 
@@ -2293,6 +2316,7 @@ fun ProfileTabContent(
                             label = { Text("Email Address") },
                             singleLine = true,
                             shape = RoundedCornerShape(10.dp),
+                            colors = dialogFieldColors,
                             modifier = Modifier.fillMaxWidth()
                         )
 
@@ -2302,6 +2326,7 @@ fun ProfileTabContent(
                             label = { Text("Phone / Contact Number") },
                             singleLine = true,
                             shape = RoundedCornerShape(10.dp),
+                            colors = dialogFieldColors,
                             modifier = Modifier.fillMaxWidth()
                         )
 
@@ -2311,6 +2336,7 @@ fun ProfileTabContent(
                             label = { Text("Role / Position") },
                             singleLine = true,
                             shape = RoundedCornerShape(10.dp),
+                            colors = dialogFieldColors,
                             modifier = Modifier.fillMaxWidth()
                         )
 
@@ -2320,6 +2346,7 @@ fun ProfileTabContent(
                             label = { Text("Gender") },
                             singleLine = true,
                             shape = RoundedCornerShape(10.dp),
+                            colors = dialogFieldColors,
                             modifier = Modifier.fillMaxWidth()
                         )
                     }
@@ -2330,16 +2357,23 @@ fun ProfileTabContent(
                     Button(
                         onClick = {
                             if (!isPreview) {
-                                infoPrefs.edit()
-                                    .putString("name_$agentName", fullNameState)
-                                    .putString("email_$agentName", emailState)
-                                    .putString("phone_$agentName", phoneState)
-                                    .putString("role_$agentName", roleState)
-                                    .putString("gender_$agentName", genderState)
-                                    .apply()
+                                val oldAgentName = agentName
+                                val oldAgentEmail = matchedAgent?.get("email") ?: infoPrefs.getString("email_$agentName", "") ?: ""
 
                                 if (isOwnerMode || agentName.contains("Admin", ignoreCase = true)) {
-                                    infoPrefs.edit().putString("email_Admin", emailState).apply()
+                                    infoPrefs.edit()
+                                        .putString("name_$agentName", fullNameState)
+                                        .putString("name_Admin", fullNameState)
+                                        .putString("email_Admin", emailState)
+                                        .putString("phone_Admin", phoneState)
+                                        .putString("role_Admin", roleState)
+                                        .putString("gender_Admin", genderState)
+                                        .apply()
+
+                                    securityPrefs.edit()
+                                        .putString("email_Admin", emailState)
+                                        .apply()
+
                                     FirebaseCloudSyncManager.pushAdminProfileToCloud(
                                         fullName = fullNameState,
                                         email = emailState,
@@ -2347,6 +2381,32 @@ fun ProfileTabContent(
                                         role = roleState,
                                         gender = genderState
                                     )
+                                    FirebaseCloudSyncManager.notifyCloudUpdate()
+                                } else {
+                                    infoPrefs.edit()
+                                        .remove("name_$oldAgentName")
+                                        .remove("email_$oldAgentName")
+                                        .remove("phone_$oldAgentName")
+                                        .remove("role_$oldAgentName")
+                                        .remove("gender_$oldAgentName")
+                                        .putString("name_$fullNameState", fullNameState)
+                                        .putString("email_$fullNameState", emailState)
+                                        .putString("phone_$fullNameState", phoneState)
+                                        .putString("role_$fullNameState", roleState)
+                                        .putString("gender_$fullNameState", genderState)
+                                        .apply()
+
+                                    dbHelper.updateAgentProfile(
+                                        oldName = oldAgentName,
+                                        oldEmail = oldAgentEmail,
+                                        newName = fullNameState,
+                                        newEmail = emailState,
+                                        phone = phoneState,
+                                        role = roleState,
+                                        gender = genderState,
+                                        syncToCloud = true
+                                    )
+                                    FirebaseCloudSyncManager.notifyCloudUpdate()
                                 }
 
                                 val sessionMgr = UserSessionManager(context)
@@ -2513,12 +2573,23 @@ fun ProfileTabContent(
 
                     Text("Change Password", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = TextDark)
 
+                    val secFieldColors = OutlinedTextFieldDefaults.colors(
+                        focusedTextColor = if (AzureCalendarColors.isDarkMode) Color.White else TextDark,
+                        unfocusedTextColor = if (AzureCalendarColors.isDarkMode) Color.White else TextDark,
+                        focusedContainerColor = if (AzureCalendarColors.isDarkMode) Color(0xFF2A2335) else CardBg,
+                        unfocusedContainerColor = if (AzureCalendarColors.isDarkMode) Color(0xFF2A2335) else CardBg,
+                        focusedBorderColor = PurplePrimary,
+                        unfocusedBorderColor = BorderPurple,
+                        cursorColor = PurplePrimary
+                    )
+
                     OutlinedTextField(
                         value = currentPasswordInput,
                         onValueChange = { currentPasswordInput = it },
                         label = { Text("Current Password") },
                         singleLine = true,
                         shape = RoundedCornerShape(10.dp),
+                        colors = secFieldColors,
                         modifier = Modifier.fillMaxWidth()
                     )
 
@@ -2543,6 +2614,7 @@ fun ProfileTabContent(
                         },
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
                         shape = RoundedCornerShape(10.dp),
+                        colors = secFieldColors,
                         modifier = Modifier.fillMaxWidth()
                     )
 
@@ -2564,6 +2636,7 @@ fun ProfileTabContent(
                         },
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
                         shape = RoundedCornerShape(10.dp),
+                        colors = secFieldColors,
                         modifier = Modifier.fillMaxWidth()
                     )
                 }
@@ -2571,28 +2644,80 @@ fun ProfileTabContent(
             confirmButton = {
                 Button(
                     onClick = {
-                        if (newPasswordInput.isNotBlank() && newPasswordInput != confirmPasswordInput) {
-                            Toast.makeText(context, "New passwords do not match!", Toast.LENGTH_SHORT).show()
-                        } else {
+                        if (newPasswordInput.isNotBlank() || currentPasswordInput.isNotBlank()) {
+                            val isAdmin = isOwnerMode || agentName.contains("Admin", ignoreCase = true) || agentName.contains("Owner", ignoreCase = true)
+                            val userKey = if (isAdmin) "Admin" else agentName.lowercase().replace(" ", "")
+                            val cleanEmail = if (isAdmin) "admin@azure.com" else "${agentName.lowercase().replace(" ", "")}@gmail.com"
+                            val defaultPass = if (isAdmin) "novie1109" else "123456"
+
+                            val dbHelper = AzureDatabaseHelper(context)
+                            val savedPass = securityPrefs.getString("password_$userKey", null)
+                                ?: securityPrefs.getString("password_$agentName", null)
+                                ?: securityPrefs.getString("password_$cleanEmail", null)
+                                ?: dbHelper.getAgentPassword(agentName)
+                                ?: dbHelper.getAgentPassword(cleanEmail)
+                                ?: defaultPass
+
+                            if (currentPasswordInput.isNotBlank() && currentPasswordInput != savedPass) {
+                                Toast.makeText(context, "Current password is incorrect!", Toast.LENGTH_SHORT).show()
+                                return@Button
+                            }
+
                             if (newPasswordInput.isNotBlank()) {
+                                if (newPasswordInput != confirmPasswordInput) {
+                                    Toast.makeText(context, "New passwords do not match!", Toast.LENGTH_SHORT).show()
+                                    return@Button
+                                }
+
                                 if (!isPreview) {
-                                    securityPrefs.edit().putString("password_$agentName", newPasswordInput).apply()
+                                    val editor = securityPrefs.edit()
+                                        .putString("password_$userKey", newPasswordInput)
+                                        .putString("password_$agentName", newPasswordInput)
+                                        .putString("password_$cleanEmail", newPasswordInput)
+                                        .putString("password_${agentName.lowercase()}", newPasswordInput)
+
+                                    if (isAdmin) {
+                                        editor.putString("password_Admin", newPasswordInput)
+                                            .putString("password_admin@azure.com", newPasswordInput)
+                                            .putString("password_admin@gmail.com", newPasswordInput)
+                                    }
+                                    editor.apply()
+
+                                    // Update SQLite Database Record
+                                    dbHelper.updateAgentPassword(agentName, newPasswordInput, syncToCloud = true)
+                                    dbHelper.updateAgentPassword(cleanEmail, newPasswordInput, syncToCloud = true)
+                                    if (isAdmin) {
+                                        dbHelper.updateAgentPassword("Admin", newPasswordInput, syncToCloud = true)
+                                    }
+
+                                    // Update Cloud Firestore
+                                    FirebaseCloudSyncManager.pushAgentPasswordToCloud(agentName, newPasswordInput)
+                                    FirebaseCloudSyncManager.pushAgentPasswordToCloud(cleanEmail, newPasswordInput)
+                                    if (isAdmin) {
+                                        FirebaseCloudSyncManager.pushAgentPasswordToCloud("Admin", newPasswordInput)
+                                    }
+
                                     try {
                                         com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.updatePassword(newPasswordInput)
                                             ?.addOnCompleteListener { task ->
                                                 if (task.isSuccessful) {
-                                                    android.util.Log.d("FirebasePass", "Cloud password updated across all devices!")
+                                                    android.util.Log.d("FirebasePass", "Firebase auth password updated!")
                                                 }
                                             }
                                     } catch (_: Exception) {}
                                 }
-                                Toast.makeText(context, "Password updated across all devices!", Toast.LENGTH_SHORT).show()
+
+                                Toast.makeText(context, "Password updated in database! You can now log in with your new password.", Toast.LENGTH_LONG).show()
                                 currentPasswordInput = ""
                                 newPasswordInput = ""
                                 confirmPasswordInput = ""
+                                showSecurityDialog = false
                             } else {
                                 Toast.makeText(context, "Security preferences saved!", Toast.LENGTH_SHORT).show()
+                                showSecurityDialog = false
                             }
+                        } else {
+                            Toast.makeText(context, "Security preferences saved!", Toast.LENGTH_SHORT).show()
                             showSecurityDialog = false
                         }
                     },
@@ -2770,7 +2895,7 @@ fun ProfileTabContent(
                     Text("Close", color = TextMuted)
                 }
             },
-            containerColor = Color.White,
+            containerColor = CardBg,
             shape = RoundedCornerShape(20.dp)
         )
     }
@@ -2802,6 +2927,16 @@ fun ProfileTabContent(
                 ) {
                     Text("Configure email delivery, registered Gmail address, and automated triggers:", fontSize = 12.sp, color = TextMuted)
 
+                    val emailFieldColors = OutlinedTextFieldDefaults.colors(
+                        focusedTextColor = if (AzureCalendarColors.isDarkMode) Color.White else TextDark,
+                        unfocusedTextColor = if (AzureCalendarColors.isDarkMode) Color.White else TextDark,
+                        focusedContainerColor = if (AzureCalendarColors.isDarkMode) Color(0xFF2A2335) else CardBg,
+                        unfocusedContainerColor = if (AzureCalendarColors.isDarkMode) Color(0xFF2A2335) else CardBg,
+                        focusedBorderColor = PurplePrimary,
+                        unfocusedBorderColor = BorderPurple,
+                        cursorColor = PurplePrimary
+                    )
+
                     OutlinedTextField(
                         value = senderEmailInput,
                         onValueChange = { senderEmailInput = it },
@@ -2809,6 +2944,7 @@ fun ProfileTabContent(
                         placeholder = { Text("agent@gmail.com") },
                         singleLine = true,
                         shape = RoundedCornerShape(10.dp),
+                        colors = emailFieldColors,
                         modifier = Modifier.fillMaxWidth()
                     )
 
@@ -2920,7 +3056,7 @@ fun ProfileTabContent(
                     Text("Close", color = TextMuted)
                 }
             },
-            containerColor = Color.White,
+            containerColor = CardBg,
             shape = RoundedCornerShape(20.dp)
         )
     }
