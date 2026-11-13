@@ -406,6 +406,48 @@ fun RegisterScreen(
                 )
             }
 
+            Spacer(modifier = Modifier.height(14.dp))
+
+            // Divider Text
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                HorizontalDivider(modifier = Modifier.weight(1f), color = Color(0xFFD6C7EE))
+                Text(
+                    text = "  or Sign Up with  ",
+                    fontSize = 12.sp,
+                    color = Color.Gray
+                )
+                HorizontalDivider(modifier = Modifier.weight(1f), color = Color(0xFFD6C7EE))
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            // Social Sign-Up (Google)
+            Row(
+                horizontalArrangement = Arrangement.Center,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = Color.White,
+                    shadowElevation = 3.dp,
+                    modifier = Modifier
+                        .size(46.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .clickable { onGoogleSignUpClick() }
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Image(
+                            painter = painterResource(id = R.drawable.ic_google),
+                            contentDescription = "Google Sign Up",
+                            modifier = Modifier.size(24.dp)
+                        )
+                    }
+                }
+            }
+
             Spacer(modifier = Modifier.height(16.dp))
 
             // Footer Navigation to Login

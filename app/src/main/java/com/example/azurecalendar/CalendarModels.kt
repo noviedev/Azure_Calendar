@@ -101,10 +101,10 @@ fun AzureCalendarView(
 
             // Today Button to quickly jump back to real-time current date
             Surface(
-                shape = RoundedCornerShape(12.dp),
-                color = AzureCalendarColors.PurplePrimary,
+                shape = RoundedCornerShape(20.dp),
+                color = Color(0xFFE53935),
                 modifier = Modifier
-                    .clip(RoundedCornerShape(12.dp))
+                    .clip(RoundedCornerShape(20.dp))
                     .clickable {
                         val realCal = java.util.Calendar.getInstance()
                         val todayMIdx = realCal.get(java.util.Calendar.MONTH)
@@ -138,7 +138,7 @@ fun AzureCalendarView(
                         imageVector = Icons.Default.Today,
                         contentDescription = "Jump to Today",
                         tint = Color.White,
-                        modifier = Modifier.size(14.dp)
+                        modifier = Modifier.size(13.dp)
                     )
                     Text(
                         text = "Today",
@@ -200,7 +200,7 @@ fun AzureCalendarView(
                         text = currentMonthTitle,
                         fontSize = 16.sp,
                         fontWeight = FontWeight.Bold,
-                        color = AzureCalendarColors.TextDark
+                        color = Color(0xFF2C1A36)
                     )
                     Spacer(modifier = Modifier.width(4.dp))
                     Icon(
@@ -257,7 +257,7 @@ fun AzureCalendarView(
                     val isSelected = mode == selectedMode
                     Surface(
                         shape = RoundedCornerShape(12.dp),
-                        color = if (isSelected) AzureCalendarColors.PurplePrimary else Color.Transparent,
+                        color = if (isSelected) AzureCalendarColors.PurplePrimary else Color(0xFFF3EDFD),
                         modifier = Modifier
                             .weight(1f)
                             .height(38.dp)
@@ -269,7 +269,7 @@ fun AzureCalendarView(
                                 text = mode,
                                 fontSize = 13.sp,
                                 fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                                color = if (isSelected) Color.White else AzureCalendarColors.TextMuted
+                                color = if (isSelected) Color.White else Color(0xFF7B6287)
                             )
                         }
                     }
@@ -717,7 +717,7 @@ fun AzureCalendarView(
                     text = "Select Month & Year",
                     fontSize = 18.sp,
                     fontWeight = FontWeight.Bold,
-                    color = AzureCalendarColors.TextDark
+                    color = Color(0xFF2C1A36)
                 )
             },
             text = {
@@ -792,7 +792,7 @@ fun AzureCalendarView(
                                                 text = mName.take(3),
                                                 fontSize = 13.sp,
                                                 fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                                                color = if (isSelected) Color.White else AzureCalendarColors.TextDark
+                                                color = if (isSelected) Color.White else Color(0xFF2C1A36)
                                             )
                                         }
                                     }

@@ -723,7 +723,7 @@ fun ChooseCategoryScreen(
                     text = titleText,
                     fontSize = 18.sp,
                     fontWeight = FontWeight.Bold,
-                    color = TextDark
+                    color = Color(0xFF2C1A36)
                 )
             },
             text = {
@@ -782,7 +782,7 @@ fun ChooseCategoryScreen(
                         horizontalArrangement = Arrangement.SpaceAround
                     ) {
                         listOf("M", "T", "W", "T", "F", "S", "S").forEach { h ->
-                            Text(h, fontSize = 12.sp, fontWeight = FontWeight.Bold, color = TextMuted)
+                            Text(h, fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color(0xFF7B6287))
                         }
                     }
 
@@ -866,7 +866,7 @@ fun ChooseCategoryScreen(
                                             color = when {
                                                 isSelected -> Color.White
                                                 isCellPast -> Color.LightGray
-                                                else -> TextDark
+                                                else -> Color(0xFF2C1A36)
                                             }
                                         )
                                     }

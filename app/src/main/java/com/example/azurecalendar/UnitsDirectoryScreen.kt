@@ -286,27 +286,25 @@ fun UnitsDirectoryScreen(
         allUnitsList.map { unitItem ->
             val matchingEvent = dbEventsState.value.filter { evt ->
                 val evtDate = evt["date"] ?: ""
-                val evtTime = evt["time"] ?: "12:00 PM"
                 val evtUnit = evt["unit"] ?: ""
 
-                val isExpired = FirebaseCloudSyncManager.isEventDateExpired(evtDate, evtTime)
                 val unitMatches = isSameUnit(evtUnit, unitItem.unitNumber)
                 val dateMatches = isDateCoveredByEvent(evtDate, selectedDayNumber, shortMonthName, selectedYearNumber)
 
-                unitMatches && !isExpired && dateMatches
+                unitMatches && dateMatches
             }.firstOrNull { evt ->
                 val shape = (evt["shape"] ?: "").lowercase()
-                !shape.contains("available") || shape.contains("not")
+                val title = (evt["title"] ?: "").lowercase()
+                val combined = "$shape $title"
+                !combined.contains("available") || combined.contains("not")
             } ?: dbEventsState.value.find { evt ->
                 val evtDate = evt["date"] ?: ""
-                val evtTime = evt["time"] ?: "12:00 PM"
                 val evtUnit = evt["unit"] ?: ""
 
-                val isExpired = FirebaseCloudSyncManager.isEventDateExpired(evtDate, evtTime)
                 val unitMatches = isSameUnit(evtUnit, unitItem.unitNumber)
                 val dateMatches = isDateCoveredByEvent(evtDate, selectedDayNumber, shortMonthName, selectedYearNumber)
 
-                unitMatches && !isExpired && dateMatches
+                unitMatches && dateMatches
             }
 
             val dynamicStatus = if (matchingEvent != null) {
@@ -321,7 +319,7 @@ fun UnitsDirectoryScreen(
                     else -> shape.ifBlank { "Available" }
                 }
             } else {
-                unitItem.status.ifBlank { "Available" }
+                "Available"
             }
 
             unitItem.copy(status = dynamicStatus)
@@ -364,8 +362,9 @@ fun UnitsDirectoryScreen(
                 )
 
                 Surface(
-                    shape = RoundedCornerShape(16.dp),
-                    color = Color(0xFFF3EDFD)
+                    shape = RoundedCornerShape(30.dp),
+                    color = Color(0xFFF3EDFD),
+                    border = BorderStroke(1.dp, Color(0xFFE1BEE7))
                 ) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
@@ -375,7 +374,7 @@ fun UnitsDirectoryScreen(
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             modifier = Modifier
-                                .clip(RoundedCornerShape(10.dp))
+                                .clip(RoundedCornerShape(20.dp))
                                 .clickable { showDatePickerDialog = true }
                                 .padding(horizontal = 10.dp, vertical = 6.dp),
                             horizontalArrangement = Arrangement.spacedBy(6.dp)
@@ -383,22 +382,22 @@ fun UnitsDirectoryScreen(
                             Icon(
                                 imageVector = Icons.Default.CalendarMonth,
                                 contentDescription = "Select Date",
-                                tint = PurplePrimary,
-                                modifier = Modifier.size(14.dp)
+                                tint = Color(0xFFE53935),
+                                modifier = Modifier.size(15.dp)
                             )
                             Text(
                                 text = "$shortMonthName $selectedDayNumber, $selectedYearNumber",
                                 fontSize = 12.sp,
                                 fontWeight = FontWeight.Bold,
-                                color = TextDark
+                                color = Color(0xFF2C1A36)
                             )
                         }
 
                         Surface(
-                            shape = RoundedCornerShape(12.dp),
-                            color = PurplePrimary,
+                            shape = RoundedCornerShape(20.dp),
+                            color = Color(0xFFE53935),
                             modifier = Modifier
-                                .clip(RoundedCornerShape(12.dp))
+                                .clip(RoundedCornerShape(20.dp))
                                 .clickable {
                                     val realCal = java.util.Calendar.getInstance()
                                     selectedDayNumber = realCal.get(java.util.Calendar.DAY_OF_MONTH)
@@ -408,7 +407,7 @@ fun UnitsDirectoryScreen(
                                 }
                         ) {
                             Row(
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(4.dp)
                             ) {
@@ -416,7 +415,7 @@ fun UnitsDirectoryScreen(
                                     imageVector = Icons.Default.Today,
                                     contentDescription = "Today",
                                     tint = Color.White,
-                                    modifier = Modifier.size(12.dp)
+                                    modifier = Modifier.size(13.dp)
                                 )
                                 Text(
                                     text = "Today",
@@ -622,7 +621,7 @@ fun UnitsDirectoryScreen(
                     text = "Select Date & Month",
                     fontSize = 18.sp,
                     fontWeight = FontWeight.Bold,
-                    color = TextDark
+                    color = Color(0xFF2C1A36)
                 )
             },
             text = {
@@ -684,7 +683,7 @@ fun UnitsDirectoryScreen(
                                 text = dayHeader,
                                 fontSize = 12.sp,
                                 fontWeight = FontWeight.Bold,
-                                color = TextMuted
+                                color = Color(0xFF7B6287)
                             )
                         }
                     }
@@ -762,7 +761,7 @@ fun UnitsDirectoryScreen(
                                                 text = dayNum.toString(),
                                                 fontSize = 12.sp,
                                                 fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                                                color = if (isSelected) Color.White else TextDark
+                                                color = if (isSelected) Color.White else Color(0xFF2C1A36)
                                             )
                                         }
                                     }

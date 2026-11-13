@@ -353,15 +353,91 @@ class MainActivity : FragmentActivity() {
 
                     "google_login" -> GoogleLoginScreen(
                         onBackToLogin = { currentScreen = "login" },
-                        onLoginSuccess = { userName ->
-                            val role = "Agent"
-                            val cleanEmail = "${userName.lowercase().replace(" ", ".")}@gmail.com"
-                            dbHelper.insertAgent(userName, cleanEmail, "", "Google Agent", "Female")
-                            FirebaseCloudSyncManager.pushAgentToCloud(userName, cleanEmail, "", "Google Agent", "Female")
-                            sessionManager.saveSession(userName, role)
-                            registeredAgentName = userName
-                            Toast.makeText(context, "Google Login Successful for $userName!", Toast.LENGTH_SHORT).show()
-                            currentScreen = "agent_dashboard"
+                        onLoginSuccess = { userName, userEmail, password ->
+                            val cleanEmail = userEmail.ifBlank { "${userName.lowercase().replace(" ", ".")}@gmail.com" }
+                            val userKey = cleanEmail.substringBefore("@").lowercase()
+
+                            val deletedPrefs = context.getSharedPreferences("azure_calendar_deleted_agents", Context.MODE_PRIVATE)
+                            val deletedSet = deletedPrefs.getStringSet("deleted_agent_keys", emptySet()).orEmpty()
+                            val isDeletedAgent = deletedSet.contains(cleanEmail.lowercase()) ||
+                                    deletedSet.contains(userKey) ||
+                                    deletedSet.contains(userName.lowercase())
+
+                            if (isDeletedAgent) {
+                                Toast.makeText(context, "This agent account has been permanently deleted by the Property Owner. Login access is revoked.", Toast.LENGTH_LONG).show()
+                                currentScreen = "login"
+                            } else {
+                                val dbAgents = dbHelper.getAllAgents()
+                                val matchedAgent = dbAgents.find {
+                                    val e = it["email"]?.trim()?.lowercase().orEmpty()
+                                    val n = it["name"]?.trim()?.lowercase().orEmpty()
+                                    e == cleanEmail.lowercase() || n == userName.lowercase() || e.startsWith("$userKey@")
+                                }
+
+                                val securityPrefs = context.getSharedPreferences("azure_calendar_security_info", Context.MODE_PRIVATE)
+                                val infoPrefs = context.getSharedPreferences("azure_calendar_personal_info", Context.MODE_PRIVATE)
+
+                                val existingName = matchedAgent?.get("name")
+                                    ?: infoPrefs.getString("name_$userKey", null)
+                                    ?: infoPrefs.getString("name_$cleanEmail", null)
+                                    ?: userName
+
+                                val isAdmin = existingName.contains("Admin", ignoreCase = true) || cleanEmail.contains("admin", ignoreCase = true)
+                                val role = matchedAgent?.get("position")
+                                    ?: infoPrefs.getString("role_$userKey", null)
+                                    ?: if (isAdmin) "Owner" else "Agent"
+
+                                if (password.isNotBlank()) {
+                                    // New Google Registration with password setup
+                                    securityPrefs.edit()
+                                        .putString("password_$userKey", password)
+                                        .putString("password_$existingName", password)
+                                        .putString("password_$cleanEmail", password)
+                                        .putString("password_${existingName.lowercase()}", password)
+                                        .apply()
+
+                                    infoPrefs.edit()
+                                        .putString("name_$userKey", existingName)
+                                        .putString("email_$userKey", cleanEmail)
+                                        .putString("role_$userKey", role)
+                                        .apply()
+
+                                    dbHelper.insertAgent(existingName, cleanEmail, "", if (isAdmin) "Property Owner & Admin" else "Google Agent", "Female", password = password)
+                                    FirebaseCloudSyncManager.pushAgentToCloud(existingName, cleanEmail, "", if (isAdmin) "Property Owner & Admin" else "Google Agent", "Female", password = password)
+                                    FirebaseCloudSyncManager.pushAgentPasswordToCloud(cleanEmail, password)
+                                    FirebaseCloudSyncManager.pushAgentPasswordToCloud(existingName, password)
+
+                                    try {
+                                        FirebaseAuth.getInstance().createUserWithEmailAndPassword(cleanEmail, password)
+                                            .addOnCompleteListener { task ->
+                                                if (task.isSuccessful) {
+                                                    val user = task.result?.user
+                                                    val profileUpdates = userProfileChangeRequest {
+                                                        displayName = existingName
+                                                    }
+                                                    user?.updateProfile(profileUpdates)
+                                                }
+                                                FirebaseCloudSyncManager.startRealtimeCloudListener(context, forceRestart = true)
+                                            }
+                                    } catch (e: Exception) {
+                                        Log.e("FirebaseAuth", "Auth error: ${e.message}")
+                                    }
+                                } else {
+                                    // Existing account automatic Google Sign-In!
+                                    if (matchedAgent == null) {
+                                        dbHelper.insertAgent(existingName, cleanEmail, "", if (isAdmin) "Property Owner & Admin" else "Google Agent", "Female")
+                                        FirebaseCloudSyncManager.pushAgentToCloud(existingName, cleanEmail, "", if (isAdmin) "Property Owner & Admin" else "Google Agent", "Female")
+                                    }
+                                }
+
+                                sessionManager.saveSession(existingName, role)
+                                registeredAgentName = existingName
+                                FirebaseCloudSyncManager.startRealtimeCloudListener(context, forceRestart = true)
+
+                                val welcomeMsg = if (password.isNotBlank()) "Google Account Registered! Welcome, $existingName!" else "Welcome back, $existingName!"
+                                Toast.makeText(context, welcomeMsg, Toast.LENGTH_SHORT).show()
+                                currentScreen = if (role == "Owner") "owner_dashboard" else "agent_dashboard"
+                            }
                         }
                     )
 
